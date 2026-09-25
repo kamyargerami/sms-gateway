@@ -1,6 +1,6 @@
 # High-Performance SMS Gateway
 
-A blazing-fast, asynchronous SMS Gateway built with **Go (Golang)**, **Kafka**, **Redis**, and **MySQL**. It utilizes **Clean Architecture** principles and advanced concurrency patterns to handle over **70,000 requests per second** (RPS).
+A blazing-fast, asynchronous SMS Gateway built with **Go (Golang)**, **Kafka**, **Redis**, and **MySQL**. It utilizes **Clean Architecture** principles and advanced concurrency patterns to handle over **30,000 requests per second** (RPS).
 
 For the full design rationale — how each business requirement drove a specific
 technical decision, the Clean Architecture layering, request-flow diagrams,
