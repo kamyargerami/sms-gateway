@@ -32,6 +32,10 @@ To solve the issue of slow external operators (e.g., if an operator takes 5 seco
 However, this is an **anti-pattern** in Kafka because committing offsets concurrently leads to data loss if the server crashes (committing offset 100 implies 1-99 are also done). 
 Instead, we strictly follow the **Kafka Parallelism Model**: 1 Goroutine per Partition. To scale this system to handle slower operators, we simply increase the Kafka partitions to 100 and spawn 100 lightweight Worker replicas. This guarantees zero data loss and flawless horizontal scaling.
 
+#### E. Mock External Operator (Telecom Simulator)
+To test the resilience of our asynchronous architecture, the `internal/operator` package acts as a simulated 3rd-party telecom provider. 
+Instead of sending real SMS, it simulates the unpredictable latency of an external HTTP request. It randomly sleeps for a few milliseconds (or seconds) to simulate network delay, and randomly fails (e.g., 5% failure rate) to test the Worker's automatic Refund and Rollback mechanisms in real-time.
+
 ---
 
 ## 🚀 Setup & Installation
