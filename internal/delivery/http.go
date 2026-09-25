@@ -1,6 +1,7 @@
 package delivery
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"strconv"
@@ -14,16 +15,29 @@ import (
 )
 
 type Handler struct {
-	dbRepo   domain.DatabaseRepository
-	cache    domain.CacheRepository
-	producer domain.MessageProducer
+	transactionManager domain.TransactionManager
+	userRepo           domain.UserRepository
+	smsRepo            domain.SMSRepository
+	transactionRepo    domain.TransactionRepository
+	cache              domain.CacheRepository
+	producer           domain.MessageProducer
 }
 
-func NewHandler(dbRepo domain.DatabaseRepository, cache domain.CacheRepository, producer domain.MessageProducer) *Handler {
+func NewHandler(
+	transactionManager domain.TransactionManager,
+	userRepo domain.UserRepository,
+	smsRepo domain.SMSRepository,
+	transactionRepo domain.TransactionRepository,
+	cache domain.CacheRepository,
+	producer domain.MessageProducer,
+) *Handler {
 	return &Handler{
-		dbRepo:   dbRepo,
-		cache:    cache,
-		producer: producer,
+		transactionManager: transactionManager,
+		userRepo:           userRepo,
+		smsRepo:            smsRepo,
+		transactionRepo:    transactionRepo,
+		cache:              cache,
+		producer:           producer,
 	}
 }
 
@@ -39,18 +53,25 @@ func (h *Handler) TopUp(c *gin.Context) {
 		return
 	}
 
-	// Update DB
-	err := h.dbRepo.TopUpUser(req.UserID, req.Amount)
+	ctx := c.Request.Context()
+
+	// Update DB atomically
+	err := h.transactionManager.WithTransaction(ctx, func(transactionCtx context.Context) error {
+		if err := h.userRepo.UpdateBalance(transactionCtx, req.UserID, req.Amount); err != nil {
+			return err
+		}
+		return h.transactionRepo.Create(transactionCtx, req.UserID, req.Amount, "TOPUP")
+	})
+
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to top up in DB"})
 		return
 	}
 
-	// Update Redis (cache). If it doesn't exist, this will create it or next read will fetch.
-	err = h.cache.AddBalance(c.Request.Context(), req.UserID, req.Amount)
+	// Update Redis (cache)
+	err = h.cache.AddBalance(ctx, req.UserID, req.Amount)
 	if err != nil {
 		log.Printf("Failed to sync balance to Redis: %v", err)
-		// We still return success since DB is source of truth, but log the error
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Top up successful"})
@@ -63,12 +84,9 @@ func (h *Handler) SendSMS(c *gin.Context) {
 		return
 	}
 
-	// Cost of 1 SMS
 	cost := config.GetSMSCost()
-
 	ctx := c.Request.Context()
 
-	// Use Lua script to atomically check and deduct balance
 	res, err := h.cache.DeductBalance(ctx, req.UserID, cost)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check balance"})
@@ -76,20 +94,17 @@ func (h *Handler) SendSMS(c *gin.Context) {
 	}
 
 	if res == -1 {
-		// Key didn't exist in Redis. Fetch from MySQL.
-		balance, err := h.dbRepo.GetUserBalance(req.UserID)
+		balance, err := h.userRepo.GetBalance(ctx, req.UserID)
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "User not found or db error"})
 			return
 		}
 
-		// Set in Redis
 		if err := h.cache.SetBalance(ctx, req.UserID, balance); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to sync cache"})
 			return
 		}
 
-		// Retry deduction
 		res, err = h.cache.DeductBalance(ctx, req.UserID, cost)
 		if err != nil || res == -1 {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to deduct balance after sync"})
@@ -102,7 +117,6 @@ func (h *Handler) SendSMS(c *gin.Context) {
 		return
 	}
 
-	// Balance successfully deducted. Create SMS record.
 	sms := &domain.SMS{
 		ID:        uuid.New().String(),
 		UserID:    req.UserID,
@@ -114,10 +128,6 @@ func (h *Handler) SendSMS(c *gin.Context) {
 		UpdatedAt: time.Now(),
 	}
 
-	// Removed MySQL synchronous insert to improve throughput.
-	// Worker will insert the record into MySQL asynchronously.
-
-	// Publish to Kafka
 	if err := h.producer.Produce(ctx, sms); err != nil {
 		log.Printf("Failed to publish to Kafka: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to queue SMS"})
@@ -135,7 +145,7 @@ func (h *Handler) GetReports(c *gin.Context) {
 		return
 	}
 
-	reports, err := h.dbRepo.GetUserSMS(userID)
+	reports, err := h.smsRepo.GetByUserID(c.Request.Context(), userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch reports"})
 		return

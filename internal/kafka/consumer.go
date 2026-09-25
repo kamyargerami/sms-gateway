@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"sms/internal/config"
 	"sms/internal/domain"
@@ -13,24 +12,40 @@ import (
 )
 
 type Consumer struct {
-	reader   *kafka.Reader
-	operator domain.SMSOperator
-	dbRepo   domain.DatabaseRepository
-	cache    domain.CacheRepository
+	reader             *kafka.Reader
+	operator           domain.SMSOperator
+	transactionManager domain.TransactionManager
+	userRepo           domain.UserRepository
+	smsRepo            domain.SMSRepository
+	transactionRepo    domain.TransactionRepository
+	cache              domain.CacheRepository
 }
 
-func NewConsumer(brokers []string, topic string, groupID string, dbRepo domain.DatabaseRepository, cache domain.CacheRepository, op domain.SMSOperator) *Consumer {
+func NewConsumer(
+	brokers []string,
+	topic string,
+	groupID string,
+	transactionManager domain.TransactionManager,
+	userRepo domain.UserRepository,
+	smsRepo domain.SMSRepository,
+	transactionRepo domain.TransactionRepository,
+	cache domain.CacheRepository,
+	op domain.SMSOperator,
+) *Consumer {
 	return &Consumer{
 		reader: kafka.NewReader(kafka.ReaderConfig{
 			Brokers:  brokers,
 			GroupID:  groupID,
 			Topic:    topic,
-			MinBytes: 10e3, // 10KB
-			MaxBytes: 10e6, // 10MB
+			MinBytes: 10e3,
+			MaxBytes: 10e6,
 		}),
-		operator: op,
-		dbRepo:   dbRepo,
-		cache:    cache,
+		operator:           op,
+		transactionManager: transactionManager,
+		userRepo:           userRepo,
+		smsRepo:            smsRepo,
+		transactionRepo:    transactionRepo,
+		cache:              cache,
 	}
 }
 
@@ -39,9 +54,9 @@ func (c *Consumer) Start(ctx context.Context) {
 		m, err := c.reader.FetchMessage(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
-				return // Context canceled
+				return // Context cancelled, exit gracefully
 			}
-			log.Printf("Error fetching message: %v\n", err)
+			log.Printf("Error reading message: %v\n", err)
 			continue
 		}
 
@@ -54,18 +69,27 @@ func (c *Consumer) Start(ctx context.Context) {
 			continue
 		}
 
-		// 1. Idempotency Check: Insert into DB first.
-		// If it fails with Duplicate Entry, it means this message was already processed.
 		sms.Status = "PENDING"
-		if err := c.dbRepo.CreateSMS(&sms); err != nil {
-			// Check if the record already exists (Idempotent)
+		cost := config.GetSMSCost()
+
+		// 1. Transactional Insert (Unit of Work)
+		err = c.transactionManager.WithTransaction(ctx, func(transactionCtx context.Context) error {
+			if err := c.userRepo.UpdateBalance(transactionCtx, sms.UserID, -cost); err != nil {
+				return err
+			}
+			if err := c.smsRepo.Create(transactionCtx, &sms); err != nil {
+				return err
+			}
+			return c.transactionRepo.Create(transactionCtx, sms.UserID, cost, "SMS_SENT")
+		})
+
+		if err != nil {
 			if errors.Is(err, domain.ErrDuplicateRecord) {
 				if commitErr := c.reader.CommitMessages(ctx, m); commitErr != nil {
 					log.Printf("Failed to commit duplicate message: %v\n", commitErr)
 				}
 				continue
 			}
-			// If it's another DB error, we skip and DON'T commit, so Kafka will retry it later.
 			log.Printf("Error inserting SMS to DB (will retry): %v\n", err)
 			continue
 		}
@@ -79,14 +103,19 @@ func (c *Consumer) Start(ctx context.Context) {
 		}
 
 		// 3. Update DB to final status
-		if err := c.dbRepo.UpdateSMSStatus(sms.ID, status); err != nil {
+		if err := c.smsRepo.UpdateStatus(ctx, sms.ID, status); err != nil {
 			log.Printf("Error updating SMS status: %v\n", err)
 		}
 
 		// 4. Refund if failed
 		if !success {
-			cost := config.GetSMSCost()
-			if err := c.dbRepo.RefundUser(sms.UserID, cost); err != nil {
+			err = c.transactionManager.WithTransaction(ctx, func(transactionCtx context.Context) error {
+				if err := c.userRepo.UpdateBalance(transactionCtx, sms.UserID, cost); err != nil {
+					return err
+				}
+				return c.transactionRepo.Create(transactionCtx, sms.UserID, cost, "REFUND")
+			})
+			if err != nil {
 				log.Printf("Error refunding MySQL: %v\n", err)
 			}
 			if err := c.cache.AddBalance(ctx, sms.UserID, cost); err != nil {
@@ -98,11 +127,9 @@ func (c *Consumer) Start(ctx context.Context) {
 		if err := c.reader.CommitMessages(ctx, m); err != nil {
 			log.Printf("Error committing message: %v\n", err)
 		}
-
-		fmt.Printf("Processed SMS: %s, Status: %s\n", sms.ID, status)
 	}
 }
 
-func (c *Consumer) Close() {
-	c.reader.Close()
+func (c *Consumer) Close() error {
+	return c.reader.Close()
 }

@@ -1,93 +1,107 @@
 package repository
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
-	"sms/internal/config"
 	"sms/internal/domain"
 
 	"github.com/go-sql-driver/mysql"
 )
 
-type MySQLRepository struct {
+type transactionKey struct{}
+
+// InjectTransaction puts the sql.Tx into context
+func InjectTransaction(ctx context.Context, sqlTransaction *sql.Tx) context.Context {
+	return context.WithValue(ctx, transactionKey{}, sqlTransaction)
+}
+
+// ExtractTransaction pulls the sql.Tx from context if it exists
+func ExtractTransaction(ctx context.Context) *sql.Tx {
+	if sqlTransaction, ok := ctx.Value(transactionKey{}).(*sql.Tx); ok {
+		return sqlTransaction
+	}
+	return nil
+}
+
+// Queryer is an interface that matches both *sql.DB and *sql.Tx
+type Queryer interface {
+	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
+}
+
+func getQueryer(ctx context.Context, db *sql.DB) Queryer {
+	if sqlTransaction := ExtractTransaction(ctx); sqlTransaction != nil {
+		return sqlTransaction
+	}
+	return db
+}
+
+// TransactionManager Implementation
+type MySQLTransactionManager struct {
 	db *sql.DB
 }
 
-func NewMySQLRepository(dsn string) (*MySQLRepository, error) {
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		return nil, err
-	}
-	if err := db.Ping(); err != nil {
-		return nil, err
-	}
-	return &MySQLRepository{db: db}, nil
+func NewMySQLTransactionManager(db *sql.DB) *MySQLTransactionManager {
+	return &MySQLTransactionManager{db: db}
 }
 
-func (r *MySQLRepository) TopUpUser(userID int, amount int) error {
-	tx, err := r.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	// Update user balance
-	_, err = tx.Exec("UPDATE users SET balance = balance + ? WHERE id = ?", amount, userID)
+func (m *MySQLTransactionManager) WithTransaction(ctx context.Context, fn func(ctx context.Context) error) error {
+	sqlTransaction, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 
-	// Record transaction
-	_, err = tx.Exec("INSERT INTO transactions (user_id, amount, type) VALUES (?, ?, 'TOPUP')", userID, amount)
-	if err != nil {
+	transactionCtx := InjectTransaction(ctx, sqlTransaction)
+
+	if err := fn(transactionCtx); err != nil {
+		sqlTransaction.Rollback()
 		return err
 	}
-
-	return tx.Commit()
+	return sqlTransaction.Commit()
 }
 
-func (r *MySQLRepository) RefundUser(userID int, amount int) error {
-	tx, err := r.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	// Update user balance
-	_, err = tx.Exec("UPDATE users SET balance = balance + ? WHERE id = ?", amount, userID)
-	if err != nil {
-		return err
-	}
-
-	// Record transaction
-	_, err = tx.Exec("INSERT INTO transactions (user_id, amount, type) VALUES (?, ?, 'REFUND')", userID, amount)
-	if err != nil {
-		return err
-	}
-
-	return tx.Commit()
+// User Repository
+type MySQLUserRepository struct {
+	db *sql.DB
 }
 
-func (r *MySQLRepository) CreateSMS(sms *domain.SMS) error {
-	tx, err := r.db.Begin()
+func NewMySQLUserRepository(db *sql.DB) *MySQLUserRepository {
+	return &MySQLUserRepository{db: db}
+}
+
+func (r *MySQLUserRepository) GetBalance(ctx context.Context, userID int) (int, error) {
+	q := getQueryer(ctx, r.db)
+	var balance int
+	err := q.QueryRowContext(ctx, "SELECT balance FROM users WHERE id = ?", userID).Scan(&balance)
 	if err != nil {
-		return err
+		if err == sql.ErrNoRows {
+			return 0, fmt.Errorf("user not found")
+		}
+		return 0, err
 	}
-	defer tx.Rollback()
+	return balance, nil
+}
 
-	// Calculate cost
-	cost := config.GetSMSCost()
+func (r *MySQLUserRepository) UpdateBalance(ctx context.Context, userID int, amount int) error {
+	q := getQueryer(ctx, r.db)
+	_, err := q.ExecContext(ctx, "UPDATE users SET balance = balance + ? WHERE id = ?", amount, userID)
+	return err
+}
 
-	// 1. Update user balance in MySQL FIRST
-	// This acquires an Exclusive (X) lock on the users row immediately,
-	// preventing deadlocks caused by concurrent Foreign Key Shared (S) locks.
-	_, err = tx.Exec("UPDATE users SET balance = balance - ? WHERE id = ?", cost, sms.UserID)
-	if err != nil {
-		return err
-	}
+// SMS Repository
+type MySQLSMSRepository struct {
+	db *sql.DB
+}
 
-	// 2. Insert SMS record
-	_, err = tx.Exec(
+func NewMySQLSMSRepository(db *sql.DB) *MySQLSMSRepository {
+	return &MySQLSMSRepository{db: db}
+}
+
+func (r *MySQLSMSRepository) Create(ctx context.Context, sms *domain.SMS) error {
+	q := getQueryer(ctx, r.db)
+	_, err := q.ExecContext(ctx,
 		"INSERT INTO sms_records (id, user_id, to_number, text, status, is_express) VALUES (?, ?, ?, ?, ?, ?)",
 		sms.ID, sms.UserID, sms.ToNumber, sms.Text, sms.Status, sms.IsExpress,
 	)
@@ -97,23 +111,18 @@ func (r *MySQLRepository) CreateSMS(sms *domain.SMS) error {
 		}
 		return err
 	}
-
-	// 3. Record transaction
-	_, err = tx.Exec("INSERT INTO transactions (user_id, amount, type) VALUES (?, ?, 'SMS_SENT')", sms.UserID, cost)
-	if err != nil {
-		return err
-	}
-
-	return tx.Commit()
+	return nil
 }
 
-func (r *MySQLRepository) UpdateSMSStatus(id string, status string) error {
-	_, err := r.db.Exec("UPDATE sms_records SET status = ? WHERE id = ?", status, id)
+func (r *MySQLSMSRepository) UpdateStatus(ctx context.Context, id string, status string) error {
+	q := getQueryer(ctx, r.db)
+	_, err := q.ExecContext(ctx, "UPDATE sms_records SET status = ? WHERE id = ?", status, id)
 	return err
 }
 
-func (r *MySQLRepository) GetUserSMS(userID int) ([]domain.SMS, error) {
-	rows, err := r.db.Query("SELECT id, user_id, to_number, text, status, is_express, created_at, updated_at FROM sms_records WHERE user_id = ? ORDER BY created_at DESC LIMIT 100", userID)
+func (r *MySQLSMSRepository) GetByUserID(ctx context.Context, userID int) ([]domain.SMS, error) {
+	q := getQueryer(ctx, r.db)
+	rows, err := q.QueryContext(ctx, "SELECT id, user_id, to_number, text, status, is_express, created_at, updated_at FROM sms_records WHERE user_id = ? ORDER BY created_at DESC LIMIT 100", userID)
 	if err != nil {
 		return nil, err
 	}
@@ -130,14 +139,29 @@ func (r *MySQLRepository) GetUserSMS(userID int) ([]domain.SMS, error) {
 	return smsList, nil
 }
 
-func (r *MySQLRepository) GetUserBalance(userID int) (int, error) {
-	var balance int
-	err := r.db.QueryRow("SELECT balance FROM users WHERE id = ?", userID).Scan(&balance)
+// Transaction Repository
+type MySQLTransactionRepository struct {
+	db *sql.DB
+}
+
+func NewMySQLTransactionRepository(db *sql.DB) *MySQLTransactionRepository {
+	return &MySQLTransactionRepository{db: db}
+}
+
+func (r *MySQLTransactionRepository) Create(ctx context.Context, userID int, amount int, transactionType string) error {
+	q := getQueryer(ctx, r.db)
+	_, err := q.ExecContext(ctx, "INSERT INTO transactions (user_id, amount, type) VALUES (?, ?, ?)", userID, amount, transactionType)
+	return err
+}
+
+// ConnectDB helper
+func ConnectDB(dsn string) (*sql.DB, error) {
+	db, err := sql.Open("mysql", dsn)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return 0, fmt.Errorf("user not found")
-		}
-		return 0, err
+		return nil, err
 	}
-	return balance, nil
+	if err := db.Ping(); err != nil {
+		return nil, err
+	}
+	return db, nil
 }

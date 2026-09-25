@@ -21,16 +21,21 @@ func main() {
 		port = "8080"
 	}
 
-	mysqlRepo, err := repository.NewMySQLRepository(dbDsn)
+	db, err := repository.ConnectDB(dbDsn)
 	if err != nil {
 		log.Fatalf("Failed to connect to MySQL: %v", err)
 	}
+
+	transactionManager := repository.NewMySQLTransactionManager(db)
+	userRepo := repository.NewMySQLUserRepository(db)
+	smsRepo := repository.NewMySQLSMSRepository(db)
+	transactionRepo := repository.NewMySQLTransactionRepository(db)
 
 	redisRepo := repository.NewRedisRepository(redisAddr)
 	producer := kafka.NewProducer(kafkaBrokers)
 	defer producer.Close()
 
-	handler := delivery.NewHandler(mysqlRepo, redisRepo, producer)
+	handler := delivery.NewHandler(transactionManager, userRepo, smsRepo, transactionRepo, redisRepo, producer)
 
 	r := gin.Default()
 

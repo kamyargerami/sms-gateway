@@ -18,12 +18,17 @@ func main() {
 	redisAddr := os.Getenv("REDIS_ADDR")
 	kafkaBrokers := []string{os.Getenv("KAFKA_BROKERS")}
 
-	mysqlRepo, err := repository.NewMySQLRepository(dbDsn)
+	db, err := repository.ConnectDB(dbDsn)
 	if err != nil {
 		log.Fatalf("Failed to connect to MySQL: %v", err)
 	}
 
+	transactionManager := repository.NewMySQLTransactionManager(db)
+	userRepo := repository.NewMySQLUserRepository(db)
+	smsRepo := repository.NewMySQLSMSRepository(db)
+	transactionRepo := repository.NewMySQLTransactionRepository(db)
 	redisRepo := repository.NewRedisRepository(redisAddr)
+
 	op := operator.NewMock()
 
 	workerType := os.Getenv("WORKER_TYPE")
@@ -36,7 +41,10 @@ func main() {
 	var expressConsumer, bulkConsumer *kafka.Consumer
 
 	if workerType == "express" || workerType == "" {
-		expressConsumer = kafka.NewConsumer(kafkaBrokers, "sms_express", "worker-group-express", mysqlRepo, redisRepo, op)
+		expressConsumer = kafka.NewConsumer(
+			kafkaBrokers, "sms_express", "worker-group-express",
+			transactionManager, userRepo, smsRepo, transactionRepo, redisRepo, op,
+		)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -45,7 +53,10 @@ func main() {
 	}
 
 	if workerType == "bulk" || workerType == "" {
-		bulkConsumer = kafka.NewConsumer(kafkaBrokers, "sms_bulk", "worker-group-bulk", mysqlRepo, redisRepo, op)
+		bulkConsumer = kafka.NewConsumer(
+			kafkaBrokers, "sms_bulk", "worker-group-bulk",
+			transactionManager, userRepo, smsRepo, transactionRepo, redisRepo, op,
+		)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -53,7 +64,6 @@ func main() {
 		}()
 	}
 
-	// Wait for termination signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
