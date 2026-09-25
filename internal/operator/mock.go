@@ -8,8 +8,6 @@ import (
 type Mock struct{}
 
 func NewMock() *Mock {
-	// Initialize random seed
-	rand.Seed(time.Now().UnixNano())
 	return &Mock{}
 }
 
