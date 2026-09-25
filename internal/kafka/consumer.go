@@ -85,13 +85,20 @@ func (c *Consumer) Start(ctx context.Context) {
 
 		if err != nil {
 			if errors.Is(err, domain.ErrDuplicateRecord) {
-				if commitErr := c.reader.CommitMessages(ctx, m); commitErr != nil {
-					log.Printf("Failed to commit duplicate message: %v\n", commitErr)
+				// Check if the previous worker finished processing it
+				existingSMS, getErr := c.smsRepo.GetByID(ctx, sms.ID)
+				if getErr == nil && existingSMS.Status != "PENDING" {
+					if commitErr := c.reader.CommitMessages(ctx, m); commitErr != nil {
+						log.Printf("Failed to commit duplicate message: %v\n", commitErr)
+					}
+					continue
 				}
+				// If it is PENDING, the previous worker crashed mid-flight.
+				// We fall through and resume sending it to the operator!
+			} else {
+				log.Printf("Error inserting SMS to DB (will retry): %v\n", err)
 				continue
 			}
-			log.Printf("Error inserting SMS to DB (will retry): %v\n", err)
-			continue
 		}
 
 		// 2. Simulate sending to operator
@@ -117,9 +124,10 @@ func (c *Consumer) Start(ctx context.Context) {
 			})
 			if err != nil {
 				log.Printf("Error refunding MySQL: %v\n", err)
-			}
-			if err := c.cache.AddBalance(ctx, sms.UserID, cost); err != nil {
-				log.Printf("Error refunding Redis: %v\n", err)
+			} else {
+				if err := c.cache.AddBalance(ctx, sms.UserID, cost); err != nil {
+					log.Printf("Error refunding Redis: %v\n", err)
+				}
 			}
 		}
 
