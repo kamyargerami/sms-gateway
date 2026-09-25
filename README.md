@@ -82,6 +82,7 @@ Once you see that Kafka has created the `sms_express` and `sms_bulk` topics, and
 - **`make down`**: Stops the running Docker Compose stack.
 - **`make restart`**: Restarts the entire stack (`down` then `up`).
 - **`make logs`**: Tails the logs of all running containers.
+- **`make worker-logs`**: Tails the logs of **only** the `worker-express` and `worker-bulk` containers. Useful for tracking SMS processing.
 - **`make clean`**: **⚠️ WARNING:** Destroys all containers and **wipes all database/queue volumes**. Use this for a fresh factory reset.
 
 ---

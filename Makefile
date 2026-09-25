@@ -1,4 +1,4 @@
-.PHONY: build up down logs clean restart
+.PHONY: build up down logs worker-logs clean restart
 
 # Default target
 all: build up
@@ -24,6 +24,10 @@ down:
 # View logs from all containers
 logs:
 	@docker-compose -f deployments/docker-compose.yml logs -f
+
+# View logs from only the SMS workers
+worker-logs:
+	@docker-compose -f deployments/docker-compose.yml logs worker-express worker-bulk -f
 
 # Completely reset the environment (deletes database, redis, kafka data)
 clean:
