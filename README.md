@@ -129,7 +129,7 @@ This will automatically execute `go test -v ./...` in a temporary `golang:1.26-a
 
 ## 🚀 Load Testing (Benchmarking)
 
-To verify the **70,000+ RPS** capability of this asynchronous architecture, you can use the [hey](https://github.com/rakyll/hey) load-testing tool.
+To verify the **30,000+ RPS** capability of this asynchronous architecture, you can use the [hey](https://github.com/rakyll/hey) load-testing tool.
 
 Run the following command to send a massive spike of requests (e.g., 400 total requests, 20 concurrent workers) to the SMS endpoint:
 
