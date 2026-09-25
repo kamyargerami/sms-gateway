@@ -6,7 +6,7 @@ import (
 	"sms/internal/config"
 	"sms/internal/domain"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 )
 
 type MySQLRepository struct {
@@ -92,6 +92,9 @@ func (r *MySQLRepository) CreateSMS(sms *domain.SMS) error {
 		sms.ID, sms.UserID, sms.ToNumber, sms.Text, sms.Status, sms.IsExpress,
 	)
 	if err != nil {
+		if mysqlErr, ok := err.(*mysql.MySQLError); ok && mysqlErr.Number == 1062 {
+			return domain.ErrDuplicateRecord
+		}
 		return err
 	}
 

@@ -3,6 +3,7 @@ package kafka
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sms/internal/config"
@@ -57,8 +58,8 @@ func (c *Consumer) Start(ctx context.Context) {
 		// If it fails with Duplicate Entry, it means this message was already processed.
 		sms.Status = "PENDING"
 		if err := c.dbRepo.CreateSMS(&sms); err != nil {
-			// MySQL Error 1062 is Duplicate entry
-			if err.Error() != "" && (len(err.Error()) > 10 && err.Error()[:10] == "Error 1062") {
+			// Check if the record already exists (Idempotent)
+			if errors.Is(err, domain.ErrDuplicateRecord) {
 				if commitErr := c.reader.CommitMessages(ctx, m); commitErr != nil {
 					log.Printf("Failed to commit duplicate message: %v\n", commitErr)
 				}
