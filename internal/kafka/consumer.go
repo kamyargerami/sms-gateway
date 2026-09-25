@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"sms/internal/config"
 	"sms/internal/domain"
@@ -135,6 +136,8 @@ func (c *Consumer) Start(ctx context.Context) {
 		if err := c.reader.CommitMessages(ctx, m); err != nil {
 			log.Printf("Error committing message: %v\n", err)
 		}
+
+		fmt.Printf("Processed SMS: %s, Status: %s\n", sms.ID, status)
 	}
 }
 
