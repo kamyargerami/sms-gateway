@@ -1,4 +1,10 @@
-.PHONY: build up down logs worker-logs clean restart
+.PHONY: test build up down logs worker-logs clean restart
+
+# Run automated tests
+test:
+	@echo "Running automated tests..."
+	@docker run --rm -v $(PWD):/app -w /app golang:alpine go test -v ./...
+	@echo "Tests passed!"
 
 # Default target
 all: build up
@@ -38,3 +44,4 @@ clean:
 
 # Restart the application
 restart: down up
+

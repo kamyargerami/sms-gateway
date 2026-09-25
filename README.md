@@ -77,6 +77,7 @@ Once you see that Kafka has created the `sms_express` and `sms_bulk` topics, and
 
 ## 🛠️ Makefile Commands Reference
 
+- **`make test`**: Runs the automated Go unit tests inside a Docker container.
 - **`make build`**: Builds the Docker images via docker-compose.
 - **`make up`**: Starts the Docker Compose stack in the background.
 - **`make down`**: Stops the running Docker Compose stack.
@@ -112,6 +113,16 @@ curl -X POST http://localhost:8080/api/v1/sms/send \
 ```bash
 curl http://localhost:8080/api/v1/reports/1
 ```
+
+## 🧪 Automated Testing
+
+This project includes automated **Unit Tests** that mock the domain interfaces, allowing you to test the API and business logic independently of the database or Kafka.
+
+To run all test suites across the project inside an isolated Docker container:
+```bash
+make test
+```
+This will automatically execute `go test -v ./...` in a temporary `golang:1.24` container and ensure that the HTTP Handlers, Mock Operators, and Core logic return the expected results without modifying your host system.
 
 ## 🚀 Load Testing (Benchmarking)
 
