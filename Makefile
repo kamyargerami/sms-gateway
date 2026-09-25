@@ -2,9 +2,14 @@
 
 # Run automated tests
 test:
-	@echo "Running automated tests..."
-	@docker run --rm -v $(PWD):/app -w /app golang:alpine go test -v ./...
-	@echo "Tests passed!"
+	@echo "\033[1;36m🚀 Running automated tests inside Docker\033[0m"
+	@docker run --rm -v $(PWD):/app -w /app -v go_mod_cache:/go/pkg/mod golang:alpine sh -c "go test -v ./... | awk '\
+	/^=== RUN/ {print \"\033[1;36m▶ \" \$$0 \"\033[0m\"} \
+	/^--- PASS/ {print \"\033[1;32m✔ \" \$$0 \"\033[0m\"} \
+	/^--- FAIL/ {print \"\033[1;31m✖ \" \$$0 \"\033[0m\"} \
+	/^PASS/ {print \"\n\033[1;32m✅ ALL TESTS PASSED SUCCESSFULLY!\033[0m\n\"} \
+	/^FAIL/ {print \"\n\033[1;31m❌ TESTS FAILED!\033[0m\n\"} \
+	!/^=== RUN/ && !/^--- PASS/ && !/^--- FAIL/ && !/^PASS/ && !/^FAIL/ {print}'"
 
 # Default target
 all: build up
@@ -44,4 +49,3 @@ clean:
 
 # Restart the application
 restart: down up
-
