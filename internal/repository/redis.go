@@ -11,9 +11,9 @@ type RedisRepository struct {
 	client *redis.Client
 }
 
-func NewRedisRepository(addr string) *RedisRepository {
+func NewRedisRepository(address string) *RedisRepository {
 	redisClient := redis.NewClient(&redis.Options{
-		Addr: addr,
+		Addr: address,
 	})
 	return &RedisRepository{client: redisClient}
 }
@@ -50,12 +50,12 @@ func (repository *RedisRepository) DeductBalance(goContext context.Context, user
 		return 0, err
 	}
 
-	val, ok := result.(int64)
+	resultValue, ok := result.(int64)
 	if !ok {
 		return 0, fmt.Errorf("unexpected lua result type")
 	}
 
-	return int(val), nil
+	return int(resultValue), nil
 }
 
 // InitBalance loads the balance into Redis only if the key does not exist yet (SET NX).

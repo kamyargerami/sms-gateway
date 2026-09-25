@@ -15,8 +15,8 @@ import (
 
 // messageReader is the subset of *kafka.Reader the consumer uses (allows testing).
 type messageReader interface {
-	FetchMessage(ctx context.Context) (kafka.Message, error)
-	CommitMessages(ctx context.Context, msgs ...kafka.Message) error
+	FetchMessage(goContext context.Context) (kafka.Message, error)
+	CommitMessages(goContext context.Context, messages ...kafka.Message) error
 	Close() error
 }
 
@@ -24,9 +24,9 @@ type Consumer struct {
 	reader             messageReader
 	operator           domain.SMSOperator
 	transactionManager domain.TransactionManager
-	userRepo           domain.UserRepository
-	smsRepo            domain.SMSRepository
-	creditRepo         domain.CreditRepository
+	userRepository     domain.UserRepository
+	smsRepository      domain.SMSRepository
+	creditRepository   domain.CreditRepository
 	cache              domain.CacheRepository
 
 	retryBackoff time.Duration
@@ -37,9 +37,9 @@ func NewConsumer(
 	topic string,
 	groupID string,
 	transactionManager domain.TransactionManager,
-	userRepo domain.UserRepository,
-	smsRepo domain.SMSRepository,
-	creditRepo domain.CreditRepository,
+	userRepository domain.UserRepository,
+	smsRepository domain.SMSRepository,
+	creditRepository domain.CreditRepository,
 	cache domain.CacheRepository,
 	operatorService domain.SMSOperator,
 ) *Consumer {
@@ -57,9 +57,9 @@ func NewConsumer(
 		}),
 		operator:           operatorService,
 		transactionManager: transactionManager,
-		userRepo:           userRepo,
-		smsRepo:            smsRepo,
-		creditRepo:         creditRepo,
+		userRepository:     userRepository,
+		smsRepository:      smsRepository,
+		creditRepository:   creditRepository,
 		cache:              cache,
 		retryBackoff:       500 * time.Millisecond,
 	}
@@ -73,7 +73,7 @@ func (consumer *Consumer) Start(goContext context.Context) {
 				return // Context cancelled, exit gracefully
 			}
 			log.Printf("Error reading message: %v\n", err)
-			if !sleepCtx(goContext, consumer.retryBackoff) {
+			if !sleepWithContext(goContext, consumer.retryBackoff) {
 				return
 			}
 			continue
@@ -88,8 +88,8 @@ func (consumer *Consumer) Start(goContext context.Context) {
 
 		// Commit with a detached context so a shutdown signal doesn't drop a
 		// commit for a message that has been fully processed.
-		commitCtx, cancel := context.WithTimeout(context.WithoutCancel(goContext), 5*time.Second)
-		if err := consumer.reader.CommitMessages(commitCtx, message); err != nil {
+		commitContext, cancel := context.WithTimeout(context.WithoutCancel(goContext), 5*time.Second)
+		if err := consumer.reader.CommitMessages(commitContext, message); err != nil {
 			log.Printf("Error committing message: %v\n", err)
 		}
 		cancel()
@@ -119,36 +119,36 @@ func (consumer *Consumer) processMessage(goContext context.Context, message kafk
 	// balance, the source of truth never goes negative and no free SMS is sent.
 	alreadyProcessed := false
 	insufficient := false
-	err := consumer.retry(goContext, func(ctx context.Context) error {
-		txErr := consumer.transactionManager.WithTransaction(ctx, func(transactionCtx context.Context) error {
-			if err := consumer.userRepo.DeductBalance(transactionCtx, sms.UserID, cost); err != nil {
+	err := consumer.retry(goContext, func(attemptContext context.Context) error {
+		transactionError := consumer.transactionManager.WithTransaction(attemptContext, func(transactionContext context.Context) error {
+			if err := consumer.userRepository.DeductBalance(transactionContext, sms.UserID, cost); err != nil {
 				return err
 			}
-			if err := consumer.smsRepo.Create(transactionCtx, &sms); err != nil {
+			if err := consumer.smsRepository.Create(transactionContext, &sms); err != nil {
 				return err
 			}
-			return consumer.creditRepo.Create(transactionCtx, sms.UserID, cost, domain.CreditSMSSent)
+			return consumer.creditRepository.Create(transactionContext, sms.UserID, cost, domain.CreditSMSSent)
 		})
 
 		switch {
-		case txErr == nil:
+		case transactionError == nil:
 			return nil
-		case errors.Is(txErr, domain.ErrDuplicateRecord):
+		case errors.Is(transactionError, domain.ErrDuplicateRecord):
 			// Redelivery. The rollback above undid the second debit.
-			existingSMS, getErr := consumer.smsRepo.GetByID(ctx, sms.ID)
-			if getErr != nil {
-				return getErr
+			existingSMS, lookupError := consumer.smsRepository.GetByID(attemptContext, sms.ID)
+			if lookupError != nil {
+				return lookupError
 			}
 			if existingSMS.Status != domain.StatusPending {
 				alreadyProcessed = true
 			}
 			// If still PENDING, the previous worker crashed mid-flight: resume sending.
 			return nil
-		case errors.Is(txErr, domain.ErrInsufficientBalance), errors.Is(txErr, domain.ErrUserNotFound):
+		case errors.Is(transactionError, domain.ErrInsufficientBalance), errors.Is(transactionError, domain.ErrUserNotFound):
 			insufficient = true
 			return nil
 		default:
-			return txErr
+			return transactionError
 		}
 	})
 	if err != nil {
@@ -164,17 +164,17 @@ func (consumer *Consumer) processMessage(goContext context.Context, message kafk
 		// before the INSERT, so it can fail first). Inserting the record tells us.
 		sms.Status = domain.StatusFailed
 		resume := false
-		err := consumer.retry(goContext, func(ctx context.Context) error {
-			createErr := consumer.smsRepo.Create(ctx, &sms)
-			if createErr == nil {
+		err := consumer.retry(goContext, func(attemptContext context.Context) error {
+			createError := consumer.smsRepository.Create(attemptContext, &sms)
+			if createError == nil {
 				return nil
 			}
-			if !errors.Is(createErr, domain.ErrDuplicateRecord) {
-				return createErr
+			if !errors.Is(createError, domain.ErrDuplicateRecord) {
+				return createError
 			}
-			existingSMS, getErr := consumer.smsRepo.GetByID(ctx, sms.ID)
-			if getErr != nil {
-				return getErr
+			existingSMS, lookupError := consumer.smsRepository.GetByID(attemptContext, sms.ID)
+			if lookupError != nil {
+				return lookupError
 			}
 			resume = existingSMS.Status == domain.StatusPending
 			return nil
@@ -201,11 +201,11 @@ func (consumer *Consumer) processMessage(goContext context.Context, message kafk
 
 	// 3. Finalize. From here on the operator call has happened, so we must not let
 	// a shutdown abort the bookkeeping (that would cause a resend on redelivery).
-	finalCtx := context.WithoutCancel(goContext)
+	finalizeContext := context.WithoutCancel(goContext)
 
 	if success {
-		err = consumer.retry(finalCtx, func(ctx context.Context) error {
-			err := consumer.smsRepo.UpdateStatusFrom(ctx, sms.ID, domain.StatusPending, domain.StatusDelivered)
+		err = consumer.retry(finalizeContext, func(attemptContext context.Context) error {
+			err := consumer.smsRepository.UpdateStatusFrom(attemptContext, sms.ID, domain.StatusPending, domain.StatusDelivered)
 			if errors.Is(err, domain.ErrStatusNotChanged) {
 				return nil // already finalized by an earlier attempt
 			}
@@ -221,33 +221,33 @@ func (consumer *Consumer) processMessage(goContext context.Context, message kafk
 	// PENDING -> FAILED transition, so a crash can't leave a FAILED SMS without a
 	// refund and a redelivery can't refund twice.
 	refunded := false
-	err = consumer.retry(finalCtx, func(ctx context.Context) error {
+	err = consumer.retry(finalizeContext, func(attemptContext context.Context) error {
 		refunded = false
-		txErr := consumer.transactionManager.WithTransaction(ctx, func(transactionCtx context.Context) error {
-			if err := consumer.smsRepo.UpdateStatusFrom(transactionCtx, sms.ID, domain.StatusPending, domain.StatusFailed); err != nil {
+		transactionError := consumer.transactionManager.WithTransaction(attemptContext, func(transactionContext context.Context) error {
+			if err := consumer.smsRepository.UpdateStatusFrom(transactionContext, sms.ID, domain.StatusPending, domain.StatusFailed); err != nil {
 				return err
 			}
-			if err := consumer.userRepo.AddBalance(transactionCtx, sms.UserID, cost); err != nil {
+			if err := consumer.userRepository.AddBalance(transactionContext, sms.UserID, cost); err != nil {
 				return err
 			}
-			return consumer.creditRepo.Create(transactionCtx, sms.UserID, cost, domain.CreditRefund)
+			return consumer.creditRepository.Create(transactionContext, sms.UserID, cost, domain.CreditRefund)
 		})
-		if errors.Is(txErr, domain.ErrStatusNotChanged) {
+		if errors.Is(transactionError, domain.ErrStatusNotChanged) {
 			return nil // already finalized (and refunded, if needed) earlier
 		}
-		if txErr == nil {
+		if transactionError == nil {
 			refunded = true
 		}
-		return txErr
+		return transactionError
 	})
 	if err != nil {
 		return err
 	}
 
 	if refunded {
-		if err := consumer.cache.AddBalance(finalCtx, sms.UserID, cost); err != nil {
+		if err := consumer.cache.AddBalance(finalizeContext, sms.UserID, cost); err != nil {
 			log.Printf("Error refunding Redis: %v\n", err)
-			_ = consumer.cache.InvalidateBalance(finalCtx, sms.UserID)
+			_ = consumer.cache.InvalidateBalance(finalizeContext, sms.UserID)
 		}
 	}
 
@@ -255,12 +255,12 @@ func (consumer *Consumer) processMessage(goContext context.Context, message kafk
 	return nil
 }
 
-// retry runs fn until it succeeds. Each attempt gets its own timeout. It gives up
+// retry runs operation until it succeeds. Each attempt gets its own timeout. It gives up
 // only when goContext is cancelled (returns goContext's error).
-func (consumer *Consumer) retry(goContext context.Context, fn func(ctx context.Context) error) error {
+func (consumer *Consumer) retry(goContext context.Context, operation func(attemptContext context.Context) error) error {
 	for attempt := 1; ; attempt++ {
-		attemptCtx, cancel := context.WithTimeout(context.WithoutCancel(goContext), 10*time.Second)
-		err := fn(attemptCtx)
+		attemptContext, cancel := context.WithTimeout(context.WithoutCancel(goContext), 10*time.Second)
+		err := operation(attemptContext)
 		cancel()
 		if err == nil {
 			return nil
@@ -268,14 +268,14 @@ func (consumer *Consumer) retry(goContext context.Context, fn func(ctx context.C
 		log.Printf("Attempt %d failed (will retry): %v\n", attempt, err)
 
 		backoff := consumer.retryBackoff * time.Duration(min(attempt, 10))
-		if !sleepCtx(goContext, backoff) {
+		if !sleepWithContext(goContext, backoff) {
 			return goContext.Err()
 		}
 	}
 }
 
-func sleepCtx(goContext context.Context, d time.Duration) bool {
-	timer := time.NewTimer(d)
+func sleepWithContext(goContext context.Context, duration time.Duration) bool {
+	timer := time.NewTimer(duration)
 	defer timer.Stop()
 	select {
 	case <-goContext.Done():

@@ -20,7 +20,7 @@ import (
 
 func main() {
 	databaseDSN := os.Getenv("DB_DSN")
-	redisAddr := os.Getenv("REDIS_ADDR")
+	redisAddress := os.Getenv("REDIS_ADDR")
 	kafkaBrokers := config.GetKafkaBrokers()
 	port := os.Getenv("SERVER_PORT")
 
@@ -28,22 +28,22 @@ func main() {
 		port = "8080"
 	}
 
-	db, err := repository.ConnectDB(databaseDSN, config.GetDBPoolConfig())
+	database, err := repository.ConnectDatabase(databaseDSN, config.GetDatabasePoolConfig())
 	if err != nil {
 		log.Fatalf("Failed to connect to MySQL: %v", err)
 	}
-	defer func() { _ = db.Close() }()
+	defer func() { _ = database.Close() }()
 
-	transactionManager := repository.NewMySQLTransactionManager(db)
-	userRepo := repository.NewMySQLUserRepository(db)
-	smsRepo := repository.NewMySQLSMSRepository(db)
-	creditRepo := repository.NewMySQLCreditRepository(db)
+	transactionManager := repository.NewMySQLTransactionManager(database)
+	userRepository := repository.NewMySQLUserRepository(database)
+	smsRepository := repository.NewMySQLSMSRepository(database)
+	creditRepository := repository.NewMySQLCreditRepository(database)
 
-	redisRepo := repository.NewRedisRepository(redisAddr)
+	redisRepository := repository.NewRedisRepository(redisAddress)
 	producer := kafka.NewProducer(kafkaBrokers)
 	defer producer.Close()
 
-	handler := delivery.NewHandler(transactionManager, userRepo, smsRepo, creditRepo, redisRepo, producer)
+	handler := delivery.NewHandler(transactionManager, userRepository, smsRepository, creditRepository, redisRepository, producer)
 
 	router := gin.Default()
 	delivery.RegisterRoutes(router, handler)
@@ -63,14 +63,14 @@ func main() {
 
 	// Graceful shutdown: finish in-flight requests and flush the Kafka writers
 	// (the deferred producer.Close) instead of dropping them on SIGTERM.
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
+	signalChannel := make(chan os.Signal, 1)
+	signal.Notify(signalChannel, syscall.SIGINT, syscall.SIGTERM)
+	<-signalChannel
 
 	log.Println("Shutting down API server...")
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := server.Shutdown(shutdownCtx); err != nil {
+	if err := server.Shutdown(shutdownContext); err != nil {
 		log.Printf("Server forced to shutdown: %v", err)
 	}
 }

@@ -1,11 +1,7 @@
 services:
   mysql:
     image: mysql:8.0
-    command:
-      - "--max_connections=${MYSQL_MAX_CONNECTIONS}"
-      # Pin strict mode explicitly: balances are BIGINT UNSIGNED, and without strict
-      # mode MySQL would silently clamp a negative result to 0 instead of failing.
-      - "--sql-mode=STRICT_ALL_TABLES,ONLY_FULL_GROUP_BY,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION"
+    command: [ "--max_connections=${MYSQL_MAX_CONNECTIONS:-200}" ]
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
@@ -94,9 +90,9 @@ services:
       - REDIS_ADDR=redis:6379
       - KAFKA_BROKERS=kafka:29092
       - SERVER_PORT=8080
-      - DB_MAX_OPEN_CONNS=${API_DB_MAX_OPEN_CONNS}
-      - DB_MAX_IDLE_CONNS=${API_DB_MAX_IDLE_CONNS}
-      - DB_CONN_MAX_LIFETIME=${DB_CONN_MAX_LIFETIME}
+      - DB_MAX_OPEN_CONNS=${API_DB_MAX_OPEN_CONNS:-50}
+      - DB_MAX_IDLE_CONNS=${API_DB_MAX_IDLE_CONNS:-25}
+      - DB_CONN_MAX_LIFETIME=${DB_CONN_MAX_LIFETIME:-5m}
       - SMS_COST=${SMS_COST}
 
   worker-express:
@@ -118,9 +114,9 @@ services:
       - REDIS_ADDR=redis:6379
       - KAFKA_BROKERS=kafka:29092
       - WORKER_TYPE=express
-      - DB_MAX_OPEN_CONNS=${WORKER_DB_MAX_OPEN_CONNS}
-      - DB_MAX_IDLE_CONNS=${WORKER_DB_MAX_IDLE_CONNS}
-      - DB_CONN_MAX_LIFETIME=${DB_CONN_MAX_LIFETIME}
+      - DB_MAX_OPEN_CONNS=${WORKER_DB_MAX_OPEN_CONNS:-10}
+      - DB_MAX_IDLE_CONNS=${WORKER_DB_MAX_IDLE_CONNS:-5}
+      - DB_CONN_MAX_LIFETIME=${DB_CONN_MAX_LIFETIME:-5m}
       - SMS_COST=${SMS_COST}
     deploy:
       replicas: ${WORKER_EXPRESS_REPLICAS}
@@ -144,9 +140,9 @@ services:
       - REDIS_ADDR=redis:6379
       - KAFKA_BROKERS=kafka:29092
       - WORKER_TYPE=bulk
-      - DB_MAX_OPEN_CONNS=${WORKER_DB_MAX_OPEN_CONNS}
-      - DB_MAX_IDLE_CONNS=${WORKER_DB_MAX_IDLE_CONNS}
-      - DB_CONN_MAX_LIFETIME=${DB_CONN_MAX_LIFETIME}
+      - DB_MAX_OPEN_CONNS=${WORKER_DB_MAX_OPEN_CONNS:-10}
+      - DB_MAX_IDLE_CONNS=${WORKER_DB_MAX_IDLE_CONNS:-5}
+      - DB_CONN_MAX_LIFETIME=${DB_CONN_MAX_LIFETIME:-5m}
       - SMS_COST=${SMS_COST}
     deploy:
       replicas: ${WORKER_BULK_REPLICAS}

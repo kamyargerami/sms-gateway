@@ -30,32 +30,32 @@ func GetKafkaBrokers() []string {
 	return brokers
 }
 
-// DBPoolConfig holds the database/sql connection-pool limits.
-type DBPoolConfig struct {
-	MaxOpenConns    int
-	MaxIdleConns    int
-	ConnMaxLifetime time.Duration
+// DatabasePoolConfig holds the database/sql connection-pool limits.
+type DatabasePoolConfig struct {
+	MaxOpenConnections    int
+	MaxIdleConnections    int
+	ConnectionMaxLifetime time.Duration
 }
 
-// GetDBPoolConfig reads DB_MAX_OPEN_CONNS, DB_MAX_IDLE_CONNS and
-// DB_CONN_MAX_LIFETIME (a Go duration such as "5m"). Keep
-// (api replicas + worker replicas) * DB_MAX_OPEN_CONNS below MySQL's max_connections.
-func GetDBPoolConfig() DBPoolConfig {
-	pool := DBPoolConfig{
-		MaxOpenConns:    getPositiveInt("DB_MAX_OPEN_CONNS", 50),
-		ConnMaxLifetime: 5 * time.Minute,
+// GetDatabasePoolConfig reads DATABASE_MAX_OPEN_CONNECTIONS, DATABASE_MAX_IDLE_CONNECTIONS and
+// DATABASE_CONNECTION_MAX_LIFETIME (a Go duration such as "5m"). Keep
+// (api replicas + worker replicas) * DATABASE_MAX_OPEN_CONNECTIONS below MySQL's max_connections.
+func GetDatabasePoolConfig() DatabasePoolConfig {
+	pool := DatabasePoolConfig{
+		MaxOpenConnections:    getPositiveIntFromEnvironment("DATABASE_MAX_OPEN_CONNECTIONS", 50),
+		ConnectionMaxLifetime: 5 * time.Minute,
 	}
-	pool.MaxIdleConns = getPositiveInt("DB_MAX_IDLE_CONNS", pool.MaxOpenConns/2)
-	if pool.MaxIdleConns > pool.MaxOpenConns {
-		pool.MaxIdleConns = pool.MaxOpenConns
+	pool.MaxIdleConnections = getPositiveIntFromEnvironment("DATABASE_MAX_IDLE_CONNECTIONS", pool.MaxOpenConnections/2)
+	if pool.MaxIdleConnections > pool.MaxOpenConnections {
+		pool.MaxIdleConnections = pool.MaxOpenConnections
 	}
-	if lifetime, err := time.ParseDuration(os.Getenv("DB_CONN_MAX_LIFETIME")); err == nil && lifetime > 0 {
-		pool.ConnMaxLifetime = lifetime
+	if lifetime, err := time.ParseDuration(os.Getenv("DATABASE_CONNECTION_MAX_LIFETIME")); err == nil && lifetime > 0 {
+		pool.ConnectionMaxLifetime = lifetime
 	}
 	return pool
 }
 
-func getPositiveInt(key string, fallback int) int {
+func getPositiveIntFromEnvironment(key string, fallback int) int {
 	value, err := strconv.Atoi(os.Getenv(key))
 	if err != nil || value <= 0 {
 		return fallback

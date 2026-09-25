@@ -18,7 +18,7 @@ import (
 // fakeStore is an in-memory stand-in for MySQL with real rollback semantics,
 // so tests can verify the consumer's transactional guarantees.
 type fakeStore struct {
-	mu        sync.Mutex
+	mutex     sync.Mutex
 	balances  map[int]int
 	sms       map[string]domain.SMS
 	credits   []string
@@ -35,40 +35,40 @@ func newFakeStore(balance int) *fakeStore {
 	return &fakeStore{balances: map[int]int{1: balance}, sms: map[string]domain.SMS{}}
 }
 
-func (store *fakeStore) snap() snapshot {
+func (store *fakeStore) takeSnapshot() snapshot {
 	balances := map[int]int{}
-	for k, v := range store.balances {
-		balances[k] = v
+	for userID, balance := range store.balances {
+		balances[userID] = balance
 	}
 	sms := map[string]domain.SMS{}
-	for k, v := range store.sms {
-		sms[k] = v
+	for smsID, record := range store.sms {
+		sms[smsID] = record
 	}
 	return snapshot{balances, sms, append([]string(nil), store.credits...)}
 }
 
-func (store *fakeStore) WithTransaction(ctx context.Context, fn func(context.Context) error) error {
-	store.mu.Lock()
+func (store *fakeStore) WithTransaction(goContext context.Context, operation func(context.Context) error) error {
+	store.mutex.Lock()
 	if store.failNextN > 0 {
 		store.failNextN--
-		store.mu.Unlock()
-		return errors.New("transient db error")
+		store.mutex.Unlock()
+		return errors.New("transient database error")
 	}
-	before := store.snap()
-	store.mu.Unlock()
+	before := store.takeSnapshot()
+	store.mutex.Unlock()
 
-	if err := fn(ctx); err != nil {
-		store.mu.Lock()
+	if err := operation(goContext); err != nil {
+		store.mutex.Lock()
 		store.balances, store.sms, store.credits = before.balances, before.sms, before.credits
-		store.mu.Unlock()
+		store.mutex.Unlock()
 		return err
 	}
 	return nil
 }
 
-func (store *fakeStore) GetBalance(ctx context.Context, userID int) (int, error) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
+func (store *fakeStore) GetBalance(goContext context.Context, userID int) (int, error) {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
 	balance, ok := store.balances[userID]
 	if !ok {
 		return 0, domain.ErrUserNotFound
@@ -76,9 +76,9 @@ func (store *fakeStore) GetBalance(ctx context.Context, userID int) (int, error)
 	return balance, nil
 }
 
-func (store *fakeStore) AddBalance(ctx context.Context, userID, amount int) error {
-	store.mu.Lock()
-	defer store.mu.Unlock()
+func (store *fakeStore) AddBalance(goContext context.Context, userID, amount int) error {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
 	if _, ok := store.balances[userID]; !ok {
 		return domain.ErrUserNotFound
 	}
@@ -86,9 +86,9 @@ func (store *fakeStore) AddBalance(ctx context.Context, userID, amount int) erro
 	return nil
 }
 
-func (store *fakeStore) DeductBalance(ctx context.Context, userID, amount int) error {
-	store.mu.Lock()
-	defer store.mu.Unlock()
+func (store *fakeStore) DeductBalance(goContext context.Context, userID, amount int) error {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
 	balance, ok := store.balances[userID]
 	if !ok {
 		return domain.ErrUserNotFound
@@ -100,50 +100,50 @@ func (store *fakeStore) DeductBalance(ctx context.Context, userID, amount int) e
 	return nil
 }
 
-type fakeSMSRepo struct{ store *fakeStore }
+type fakeSMSRepository struct{ store *fakeStore }
 
-func (repo fakeSMSRepo) Create(ctx context.Context, sms *domain.SMS) error {
-	repo.store.mu.Lock()
-	defer repo.store.mu.Unlock()
-	if _, exists := repo.store.sms[sms.ID]; exists {
+func (repository fakeSMSRepository) Create(goContext context.Context, sms *domain.SMS) error {
+	repository.store.mutex.Lock()
+	defer repository.store.mutex.Unlock()
+	if _, exists := repository.store.sms[sms.ID]; exists {
 		return domain.ErrDuplicateRecord
 	}
-	repo.store.sms[sms.ID] = *sms
+	repository.store.sms[sms.ID] = *sms
 	return nil
 }
 
-func (repo fakeSMSRepo) UpdateStatusFrom(ctx context.Context, id, from, to string) error {
-	repo.store.mu.Lock()
-	defer repo.store.mu.Unlock()
-	record, ok := repo.store.sms[id]
+func (repository fakeSMSRepository) UpdateStatusFrom(goContext context.Context, id, from, to string) error {
+	repository.store.mutex.Lock()
+	defer repository.store.mutex.Unlock()
+	record, ok := repository.store.sms[id]
 	if !ok || record.Status != from {
 		return domain.ErrStatusNotChanged
 	}
 	record.Status = to
-	repo.store.sms[id] = record
+	repository.store.sms[id] = record
 	return nil
 }
 
-func (repo fakeSMSRepo) GetByID(ctx context.Context, id string) (*domain.SMS, error) {
-	repo.store.mu.Lock()
-	defer repo.store.mu.Unlock()
-	record, ok := repo.store.sms[id]
+func (repository fakeSMSRepository) GetByID(goContext context.Context, id string) (*domain.SMS, error) {
+	repository.store.mutex.Lock()
+	defer repository.store.mutex.Unlock()
+	record, ok := repository.store.sms[id]
 	if !ok {
 		return nil, domain.ErrSMSNotFound
 	}
 	return &record, nil
 }
 
-func (repo fakeSMSRepo) GetByUserID(ctx context.Context, userID int) ([]domain.SMS, error) {
+func (repository fakeSMSRepository) GetByUserID(goContext context.Context, userID int) ([]domain.SMS, error) {
 	return nil, nil
 }
 
-type fakeCreditRepo struct{ store *fakeStore }
+type fakeCreditRepository struct{ store *fakeStore }
 
-func (repo fakeCreditRepo) Create(ctx context.Context, userID, amount int, creditType string) error {
-	repo.store.mu.Lock()
-	defer repo.store.mu.Unlock()
-	repo.store.credits = append(repo.store.credits, creditType)
+func (repository fakeCreditRepository) Create(goContext context.Context, userID, amount int, creditType string) error {
+	repository.store.mutex.Lock()
+	defer repository.store.mutex.Unlock()
+	repository.store.credits = append(repository.store.credits, creditType)
 	return nil
 }
 
@@ -152,15 +152,15 @@ type fakeCache struct {
 	invalidations int
 }
 
-func (cache *fakeCache) AddBalance(ctx context.Context, userID, amount int) error {
+func (cache *fakeCache) AddBalance(goContext context.Context, userID, amount int) error {
 	cache.added += amount
 	return nil
 }
-func (cache *fakeCache) DeductBalance(ctx context.Context, userID, amount int) (int, error) {
+func (cache *fakeCache) DeductBalance(goContext context.Context, userID, amount int) (int, error) {
 	return 1, nil
 }
-func (cache *fakeCache) InitBalance(ctx context.Context, userID, balance int) error { return nil }
-func (cache *fakeCache) InvalidateBalance(ctx context.Context, userID int) error {
+func (cache *fakeCache) InitBalance(goContext context.Context, userID, balance int) error { return nil }
+func (cache *fakeCache) InvalidateBalance(goContext context.Context, userID int) error {
 	cache.invalidations++
 	return nil
 }
@@ -179,98 +179,98 @@ func newTestConsumer(store *fakeStore, operator *fakeOperator, cache *fakeCache)
 	return &Consumer{
 		operator:           operator,
 		transactionManager: store,
-		userRepo:           store,
-		smsRepo:            fakeSMSRepo{store},
-		creditRepo:         fakeCreditRepo{store},
+		userRepository:     store,
+		smsRepository:      fakeSMSRepository{store},
+		creditRepository:   fakeCreditRepository{store},
 		cache:              cache,
 		retryBackoff:       time.Millisecond,
 	}
 }
 
-func smsMessage(t *testing.T, id string) kafka.Message {
+func smsMessage(testingT *testing.T, id string) kafka.Message {
 	body, err := json.Marshal(domain.SMS{ID: id, UserID: 1, ToNumber: "09123456789", Text: "hi"})
-	require.NoError(t, err)
+	require.NoError(testingT, err)
 	return kafka.Message{Value: body}
 }
 
-func TestConsumer_Delivered(t *testing.T) {
-	t.Setenv("SMS_COST", "10")
+func TestConsumer_Delivered(testingT *testing.T) {
+	testingT.Setenv("SMS_COST", "10")
 	store, operator, cache := newFakeStore(100), &fakeOperator{success: true}, &fakeCache{}
 	consumer := newTestConsumer(store, operator, cache)
 
-	require.NoError(t, consumer.processMessage(context.Background(), smsMessage(t, "a")))
+	require.NoError(testingT, consumer.processMessage(context.Background(), smsMessage(testingT, "a")))
 
-	assert.Equal(t, 90, store.balances[1])
-	assert.Equal(t, domain.StatusDelivered, store.sms["a"].Status)
-	assert.Equal(t, 1, operator.calls)
+	assert.Equal(testingT, 90, store.balances[1])
+	assert.Equal(testingT, domain.StatusDelivered, store.sms["a"].Status)
+	assert.Equal(testingT, 1, operator.calls)
 }
 
-func TestConsumer_OperatorFailureRefundsOnce(t *testing.T) {
-	t.Setenv("SMS_COST", "10")
+func TestConsumer_OperatorFailureRefundsOnce(testingT *testing.T) {
+	testingT.Setenv("SMS_COST", "10")
 	store, operator, cache := newFakeStore(100), &fakeOperator{success: false}, &fakeCache{}
 	consumer := newTestConsumer(store, operator, cache)
 
-	require.NoError(t, consumer.processMessage(context.Background(), smsMessage(t, "a")))
+	require.NoError(testingT, consumer.processMessage(context.Background(), smsMessage(testingT, "a")))
 	// Redelivery of the same message must not refund (or send) again.
-	require.NoError(t, consumer.processMessage(context.Background(), smsMessage(t, "a")))
+	require.NoError(testingT, consumer.processMessage(context.Background(), smsMessage(testingT, "a")))
 
-	assert.Equal(t, 100, store.balances[1])
-	assert.Equal(t, domain.StatusFailed, store.sms["a"].Status)
-	assert.Equal(t, []string{domain.CreditSMSSent, domain.CreditRefund}, store.credits)
-	assert.Equal(t, 10, cache.added)
-	assert.Equal(t, 1, operator.calls)
+	assert.Equal(testingT, 100, store.balances[1])
+	assert.Equal(testingT, domain.StatusFailed, store.sms["a"].Status)
+	assert.Equal(testingT, []string{domain.CreditSMSSent, domain.CreditRefund}, store.credits)
+	assert.Equal(testingT, 10, cache.added)
+	assert.Equal(testingT, 1, operator.calls)
 }
 
-func TestConsumer_InsufficientBalanceNeverSends(t *testing.T) {
-	t.Setenv("SMS_COST", "10")
+func TestConsumer_InsufficientBalanceNeverSends(testingT *testing.T) {
+	testingT.Setenv("SMS_COST", "10")
 	store, operator, cache := newFakeStore(5), &fakeOperator{success: true}, &fakeCache{}
 	consumer := newTestConsumer(store, operator, cache)
 
-	require.NoError(t, consumer.processMessage(context.Background(), smsMessage(t, "a")))
+	require.NoError(testingT, consumer.processMessage(context.Background(), smsMessage(testingT, "a")))
 
-	assert.Equal(t, 5, store.balances[1], "balance must never go below zero")
-	assert.Equal(t, 0, operator.calls, "no free SMS")
-	assert.Equal(t, domain.StatusFailed, store.sms["a"].Status)
-	assert.Equal(t, 1, cache.invalidations)
+	assert.Equal(testingT, 5, store.balances[1], "balance must never go below zero")
+	assert.Equal(testingT, 0, operator.calls, "no free SMS")
+	assert.Equal(testingT, domain.StatusFailed, store.sms["a"].Status)
+	assert.Equal(testingT, 1, cache.invalidations)
 }
 
-func TestConsumer_RedeliveryOfPaidPendingSMSResumes(t *testing.T) {
-	t.Setenv("SMS_COST", "10")
+func TestConsumer_RedeliveryOfPaidPendingSMSResumes(testingT *testing.T) {
+	testingT.Setenv("SMS_COST", "10")
 	// Simulate a worker that debited + inserted, then crashed before sending,
 	// and the user's remaining balance is now 0.
 	store, operator, cache := newFakeStore(0), &fakeOperator{success: true}, &fakeCache{}
 	store.sms["a"] = domain.SMS{ID: "a", UserID: 1, Status: domain.StatusPending}
 	consumer := newTestConsumer(store, operator, cache)
 
-	require.NoError(t, consumer.processMessage(context.Background(), smsMessage(t, "a")))
+	require.NoError(testingT, consumer.processMessage(context.Background(), smsMessage(testingT, "a")))
 
-	assert.Equal(t, 0, store.balances[1], "must not debit twice")
-	assert.Equal(t, 1, operator.calls, "already paid, must still be sent")
-	assert.Equal(t, domain.StatusDelivered, store.sms["a"].Status)
+	assert.Equal(testingT, 0, store.balances[1], "must not debit twice")
+	assert.Equal(testingT, 1, operator.calls, "already paid, must still be sent")
+	assert.Equal(testingT, domain.StatusDelivered, store.sms["a"].Status)
 }
 
-func TestConsumer_TransientDBErrorIsRetriedNotSkipped(t *testing.T) {
-	t.Setenv("SMS_COST", "10")
+func TestConsumer_TransientDBErrorIsRetriedNotSkipped(testingT *testing.T) {
+	testingT.Setenv("SMS_COST", "10")
 	store, operator, cache := newFakeStore(100), &fakeOperator{success: true}, &fakeCache{}
 	store.failNextN = 3
 	consumer := newTestConsumer(store, operator, cache)
 
-	require.NoError(t, consumer.processMessage(context.Background(), smsMessage(t, "a")))
+	require.NoError(testingT, consumer.processMessage(context.Background(), smsMessage(testingT, "a")))
 
-	assert.Equal(t, domain.StatusDelivered, store.sms["a"].Status)
-	assert.Equal(t, 90, store.balances[1])
+	assert.Equal(testingT, domain.StatusDelivered, store.sms["a"].Status)
+	assert.Equal(testingT, 90, store.balances[1])
 }
 
-func TestConsumer_ShutdownDuringRetryDoesNotCommit(t *testing.T) {
-	t.Setenv("SMS_COST", "10")
+func TestConsumer_ShutdownDuringRetryDoesNotCommit(testingT *testing.T) {
+	testingT.Setenv("SMS_COST", "10")
 	store, operator, cache := newFakeStore(100), &fakeOperator{success: true}, &fakeCache{}
 	store.failNextN = 1 << 30 // DB permanently down
 	consumer := newTestConsumer(store, operator, cache)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	goContext, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 
-	err := consumer.processMessage(ctx, smsMessage(t, "a"))
-	assert.Error(t, err, "caller must not commit the offset")
-	assert.Equal(t, 0, operator.calls)
+	err := consumer.processMessage(goContext, smsMessage(testingT, "a"))
+	assert.Error(testingT, err, "caller must not commit the offset")
+	assert.Equal(testingT, 0, operator.calls)
 }

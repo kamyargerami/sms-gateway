@@ -15,20 +15,20 @@ import (
 )
 
 func main() {
-	dbDsn := os.Getenv("DB_DSN")
-	redisAddr := os.Getenv("REDIS_ADDR")
+	databaseDSN := os.Getenv("DATABASE_DSN")
+	redisAddress := os.Getenv("REDIS_ADDRESS")
 	kafkaBrokers := config.GetKafkaBrokers()
 
-	db, err := repository.ConnectDB(dbDsn, config.GetDBPoolConfig())
+	database, err := repository.ConnectDatabase(databaseDSN, config.GetDatabasePoolConfig())
 	if err != nil {
 		log.Fatalf("Failed to connect to MySQL: %v", err)
 	}
 
-	transactionManager := repository.NewMySQLTransactionManager(db)
-	userRepo := repository.NewMySQLUserRepository(db)
-	smsRepo := repository.NewMySQLSMSRepository(db)
-	creditRepo := repository.NewMySQLCreditRepository(db)
-	redisRepo := repository.NewRedisRepository(redisAddr)
+	transactionManager := repository.NewMySQLTransactionManager(database)
+	userRepository := repository.NewMySQLUserRepository(database)
+	smsRepository := repository.NewMySQLSMSRepository(database)
+	creditRepository := repository.NewMySQLCreditRepository(database)
+	redisRepository := repository.NewRedisRepository(redisAddress)
 
 	operatorService := operator.NewMock()
 
@@ -47,7 +47,7 @@ func main() {
 	if workerType == "express" || workerType == "" {
 		expressConsumer = kafka.NewConsumer(
 			kafkaBrokers, "sms_express", "worker-group-express",
-			transactionManager, userRepo, smsRepo, creditRepo, redisRepo, operatorService,
+			transactionManager, userRepository, smsRepository, creditRepository, redisRepository, operatorService,
 		)
 		waitGroup.Add(1)
 		go func() {
@@ -59,7 +59,7 @@ func main() {
 	if workerType == "bulk" || workerType == "" {
 		bulkConsumer = kafka.NewConsumer(
 			kafkaBrokers, "sms_bulk", "worker-group-bulk",
-			transactionManager, userRepo, smsRepo, creditRepo, redisRepo, operatorService,
+			transactionManager, userRepository, smsRepository, creditRepository, redisRepository, operatorService,
 		)
 		waitGroup.Add(1)
 		go func() {
@@ -68,9 +68,9 @@ func main() {
 		}()
 	}
 
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
+	signalChannel := make(chan os.Signal, 1)
+	signal.Notify(signalChannel, syscall.SIGINT, syscall.SIGTERM)
+	<-signalChannel
 
 	log.Println("Shutting down workers...")
 	cancel()
@@ -88,7 +88,7 @@ func main() {
 			log.Printf("Error closing bulk consumer: %v\n", err)
 		}
 	}
-	_ = db.Close()
+	_ = database.Close()
 
 	log.Println("Workers stopped gracefully")
 }

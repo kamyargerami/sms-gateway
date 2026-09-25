@@ -17,28 +17,28 @@ import (
 // Mock Transaction Manager
 type mockTransactionManager struct{}
 
-func (mock *mockTransactionManager) WithTransaction(goContext context.Context, fn func(goContext context.Context) error) error {
-	return fn(goContext)
+func (mock *mockTransactionManager) WithTransaction(goContext context.Context, operation func(goContext context.Context) error) error {
+	return operation(goContext)
 }
 
-// Mock User Repo
+// Mock User Repository
 type mockUserRepository struct {
-	balance   int
-	getErr    error
-	updateErr error
+	balance     int
+	getError    error
+	updateError error
 }
 
 func (mock *mockUserRepository) GetBalance(goContext context.Context, userID int) (int, error) {
-	return mock.balance, mock.getErr
+	return mock.balance, mock.getError
 }
 func (mock *mockUserRepository) AddBalance(goContext context.Context, userID int, amount int) error {
-	return mock.updateErr
+	return mock.updateError
 }
 func (mock *mockUserRepository) DeductBalance(goContext context.Context, userID int, amount int) error {
-	return mock.updateErr
+	return mock.updateError
 }
 
-// Mock SMS Repo
+// Mock SMS Repository
 type mockSMSRepository struct {
 	mockData []domain.SMS
 }
@@ -54,18 +54,18 @@ func (mock *mockSMSRepository) GetByUserID(goContext context.Context, userID int
 	return mock.mockData, nil
 }
 
-// Mock Credit Repo
+// Mock Credit Repository
 type mockCreditRepository struct {
-	createErr error
+	createError error
 }
 
 func (mock *mockCreditRepository) Create(goContext context.Context, userID int, amount int, creditType string) error {
-	return mock.createErr
+	return mock.createError
 }
 
-// Mock Cache Repo
+// Mock Cache Repository
 type mockCacheRepository struct {
-	addErr        error
+	addError      error
 	deductResults []int // consumed in order; the last value repeats
 	deductCalls   int
 	initCalls     int
@@ -75,7 +75,7 @@ type mockCacheRepository struct {
 
 func (mock *mockCacheRepository) AddBalance(goContext context.Context, userID int, amount int) error {
 	mock.addCalls++
-	return mock.addErr
+	return mock.addError
 }
 func (mock *mockCacheRepository) DeductBalance(goContext context.Context, userID int, amount int) (int, error) {
 	index := min(mock.deductCalls, len(mock.deductResults)-1)
@@ -98,36 +98,36 @@ type mockProducer struct {
 
 func (mock *mockProducer) Produce(goContext context.Context, sms *domain.SMS) error { return mock.err }
 
-type testDeps struct {
-	userRepo *mockUserRepository
-	smsRepo  *mockSMSRepository
-	cache    *mockCacheRepository
-	producer *mockProducer
+type testDependencies struct {
+	userRepository *mockUserRepository
+	smsRepository  *mockSMSRepository
+	cache          *mockCacheRepository
+	producer       *mockProducer
 }
 
-func setupRouter() (*gin.Engine, *testDeps) {
+func setupRouter() (*gin.Engine, *testDependencies) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 
-	deps := &testDeps{
-		userRepo: &mockUserRepository{},
-		smsRepo:  &mockSMSRepository{},
-		cache:    &mockCacheRepository{deductResults: []int{1}},
-		producer: &mockProducer{},
+	dependencies := &testDependencies{
+		userRepository: &mockUserRepository{},
+		smsRepository:  &mockSMSRepository{},
+		cache:          &mockCacheRepository{deductResults: []int{1}},
+		producer:       &mockProducer{},
 	}
 	handler := NewHandler(
 		&mockTransactionManager{},
-		deps.userRepo,
-		deps.smsRepo,
+		dependencies.userRepository,
+		dependencies.smsRepository,
 		&mockCreditRepository{},
-		deps.cache,
-		deps.producer,
+		dependencies.cache,
+		dependencies.producer,
 	)
 	RegisterRoutes(router, handler)
-	return router, deps
+	return router, dependencies
 }
 
-func doJSON(router *gin.Engine, method, path string, payload any) *httptest.ResponseRecorder {
+func performJSONRequest(router *gin.Engine, method, path string, payload any) *httptest.ResponseRecorder {
 	body, _ := json.Marshal(payload)
 	recorder := httptest.NewRecorder()
 	request, _ := http.NewRequest(method, path, bytes.NewBuffer(body))
@@ -142,7 +142,7 @@ func validSMS() domain.SendSMSRequest {
 
 func TestHandler_TopUp_Success(testingT *testing.T) {
 	router, _ := setupRouter()
-	response := doJSON(router, "POST", "/api/v1/users/charge", domain.TopUpRequest{UserID: 1, Amount: 500})
+	response := performJSONRequest(router, "POST", "/api/v1/users/charge", domain.TopUpRequest{UserID: 1, Amount: 500})
 
 	assert.Equal(testingT, http.StatusOK, response.Code)
 	assert.Contains(testingT, response.Body.String(), "Top up successful")
@@ -150,79 +150,79 @@ func TestHandler_TopUp_Success(testingT *testing.T) {
 
 func TestHandler_TopUp_InvalidAmount(testingT *testing.T) {
 	router, _ := setupRouter()
-	response := doJSON(router, "POST", "/api/v1/users/charge", domain.TopUpRequest{UserID: 1, Amount: -100})
+	response := performJSONRequest(router, "POST", "/api/v1/users/charge", domain.TopUpRequest{UserID: 1, Amount: -100})
 
 	assert.Equal(testingT, http.StatusBadRequest, response.Code)
 	assert.Contains(testingT, response.Body.String(), "Amount must be greater than zero")
 }
 
 func TestHandler_TopUp_UserNotFound(testingT *testing.T) {
-	router, deps := setupRouter()
-	deps.userRepo.updateErr = domain.ErrUserNotFound
+	router, dependencies := setupRouter()
+	dependencies.userRepository.updateError = domain.ErrUserNotFound
 
-	response := doJSON(router, "POST", "/api/v1/users/charge", domain.TopUpRequest{UserID: 99, Amount: 100})
+	response := performJSONRequest(router, "POST", "/api/v1/users/charge", domain.TopUpRequest{UserID: 99, Amount: 100})
 
 	assert.Equal(testingT, http.StatusNotFound, response.Code)
 }
 
 func TestHandler_TopUp_CacheFailureInvalidatesKey(testingT *testing.T) {
-	router, deps := setupRouter()
-	deps.cache.addErr = errors.New("redis down")
+	router, dependencies := setupRouter()
+	dependencies.cache.addError = errors.New("redis down")
 
-	response := doJSON(router, "POST", "/api/v1/users/charge", domain.TopUpRequest{UserID: 1, Amount: 100})
+	response := performJSONRequest(router, "POST", "/api/v1/users/charge", domain.TopUpRequest{UserID: 1, Amount: 100})
 
 	assert.Equal(testingT, http.StatusOK, response.Code)
-	assert.Equal(testingT, 1, deps.cache.invalidations)
+	assert.Equal(testingT, 1, dependencies.cache.invalidations)
 }
 
 func TestHandler_SendSMS_Success(testingT *testing.T) {
 	router, _ := setupRouter()
-	response := doJSON(router, "POST", "/api/v1/sms/send", validSMS())
+	response := performJSONRequest(router, "POST", "/api/v1/sms/send", validSMS())
 
 	assert.Equal(testingT, http.StatusOK, response.Code)
 	assert.Contains(testingT, response.Body.String(), "SMS queued successfully")
 }
 
 func TestHandler_SendSMS_InsufficientBalance(testingT *testing.T) {
-	router, deps := setupRouter()
-	deps.cache.deductResults = []int{0}
+	router, dependencies := setupRouter()
+	dependencies.cache.deductResults = []int{0}
 
-	response := doJSON(router, "POST", "/api/v1/sms/send", validSMS())
+	response := performJSONRequest(router, "POST", "/api/v1/sms/send", validSMS())
 
 	assert.Equal(testingT, http.StatusPaymentRequired, response.Code)
 	assert.Contains(testingT, response.Body.String(), "Insufficient balance")
 }
 
 func TestHandler_SendSMS_CacheMissLoadsFromDB(testingT *testing.T) {
-	router, deps := setupRouter()
-	deps.cache.deductResults = []int{-1, 1}
-	deps.userRepo.balance = 100
+	router, dependencies := setupRouter()
+	dependencies.cache.deductResults = []int{-1, 1}
+	dependencies.userRepository.balance = 100
 
-	response := doJSON(router, "POST", "/api/v1/sms/send", validSMS())
+	response := performJSONRequest(router, "POST", "/api/v1/sms/send", validSMS())
 
 	assert.Equal(testingT, http.StatusOK, response.Code)
-	assert.Equal(testingT, 1, deps.cache.initCalls)
-	assert.Equal(testingT, 2, deps.cache.deductCalls)
+	assert.Equal(testingT, 1, dependencies.cache.initCalls)
+	assert.Equal(testingT, 2, dependencies.cache.deductCalls)
 }
 
 func TestHandler_SendSMS_UnknownUser(testingT *testing.T) {
-	router, deps := setupRouter()
-	deps.cache.deductResults = []int{-1}
-	deps.userRepo.getErr = domain.ErrUserNotFound
+	router, dependencies := setupRouter()
+	dependencies.cache.deductResults = []int{-1}
+	dependencies.userRepository.getError = domain.ErrUserNotFound
 
-	response := doJSON(router, "POST", "/api/v1/sms/send", validSMS())
+	response := performJSONRequest(router, "POST", "/api/v1/sms/send", validSMS())
 
 	assert.Equal(testingT, http.StatusNotFound, response.Code)
 }
 
 func TestHandler_SendSMS_ProduceFailureRefundsCache(testingT *testing.T) {
-	router, deps := setupRouter()
-	deps.producer.err = errors.New("kafka down")
+	router, dependencies := setupRouter()
+	dependencies.producer.err = errors.New("kafka down")
 
-	response := doJSON(router, "POST", "/api/v1/sms/send", validSMS())
+	response := performJSONRequest(router, "POST", "/api/v1/sms/send", validSMS())
 
 	assert.Equal(testingT, http.StatusInternalServerError, response.Code)
-	assert.Equal(testingT, 1, deps.cache.addCalls, "reserved credit must be given back")
+	assert.Equal(testingT, 1, dependencies.cache.addCalls, "reserved credit must be given back")
 }
 
 func TestHandler_SendSMS_Validation(testingT *testing.T) {
@@ -234,18 +234,18 @@ func TestHandler_SendSMS_Validation(testingT *testing.T) {
 	}
 	for name, request := range cases {
 		testingT.Run(name, func(testingT *testing.T) {
-			router, deps := setupRouter()
-			response := doJSON(router, "POST", "/api/v1/sms/send", request)
+			router, dependencies := setupRouter()
+			response := performJSONRequest(router, "POST", "/api/v1/sms/send", request)
 
 			assert.Equal(testingT, http.StatusBadRequest, response.Code)
-			assert.Equal(testingT, 0, deps.cache.deductCalls, "balance must not be touched")
+			assert.Equal(testingT, 0, dependencies.cache.deductCalls, "balance must not be touched")
 		})
 	}
 }
 
 func TestHandler_GetReports_Success(testingT *testing.T) {
-	router, deps := setupRouter()
-	deps.smsRepo.mockData = []domain.SMS{
+	router, dependencies := setupRouter()
+	dependencies.smsRepository.mockData = []domain.SMS{
 		{ID: "uuid-1", UserID: 1, ToNumber: "09123456789", Status: "DELIVERED"},
 	}
 

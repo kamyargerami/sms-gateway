@@ -4,7 +4,7 @@ import "context"
 
 // Transaction Manager
 type TransactionManager interface {
-	WithTransaction(goContext context.Context, fn func(goContext context.Context) error) error
+	WithTransaction(goContext context.Context, operation func(goContext context.Context) error) error
 }
 
 // Entity-specific Repositories

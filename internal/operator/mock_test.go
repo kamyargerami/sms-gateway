@@ -10,7 +10,7 @@ func TestMock_SendSMS(testingT *testing.T) {
 	successCount := 0
 	runs := 100
 
-	for i := 0; i < runs; i++ {
+	for run := 0; run < runs; run++ {
 		if operatorMock.SendSMS("09123456789", "Test") {
 			successCount++
 		}
