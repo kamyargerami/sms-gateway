@@ -123,6 +123,20 @@ func (r *MySQLSMSRepository) UpdateStatus(ctx context.Context, id string, status
 	return err
 }
 
+func (r *MySQLSMSRepository) GetByID(ctx context.Context, id string) (*domain.SMS, error) {
+	q := getQueryer(ctx, r.db)
+	var s domain.SMS
+	err := q.QueryRowContext(ctx, "SELECT id, user_id, to_number, text, status, is_express, created_at, updated_at FROM sms_records WHERE id = ?", id).
+		Scan(&s.ID, &s.UserID, &s.ToNumber, &s.Text, &s.Status, &s.IsExpress, &s.CreatedAt, &s.UpdatedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("sms not found")
+		}
+		return nil, err
+	}
+	return &s, nil
+}
+
 func (r *MySQLSMSRepository) GetByUserID(ctx context.Context, userID int) ([]domain.SMS, error) {
 	q := getQueryer(ctx, r.db)
 	rows, err := q.QueryContext(ctx, "SELECT id, user_id, to_number, text, status, is_express, created_at, updated_at FROM sms_records WHERE user_id = ? ORDER BY created_at DESC LIMIT 100", userID)

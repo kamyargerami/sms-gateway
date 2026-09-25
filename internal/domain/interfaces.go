@@ -16,6 +16,7 @@ type UserRepository interface {
 type SMSRepository interface {
 	Create(ctx context.Context, sms *SMS) error
 	UpdateStatus(ctx context.Context, id string, status string) error
+	GetByID(ctx context.Context, id string) (*SMS, error)
 	GetByUserID(ctx context.Context, userID int) ([]SMS, error)
 }
 
