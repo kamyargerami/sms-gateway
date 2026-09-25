@@ -47,7 +47,9 @@ func (c *Consumer) Start(ctx context.Context) {
 		var sms domain.SMS
 		if err := json.Unmarshal(m.Value, &sms); err != nil {
 			log.Printf("Error unmarshalling sms: %v\n", err)
-			c.reader.CommitMessages(ctx, m)
+			if commitErr := c.reader.CommitMessages(ctx, m); commitErr != nil {
+				log.Printf("Failed to commit unmarshallable message: %v\n", commitErr)
+			}
 			continue
 		}
 
@@ -57,7 +59,9 @@ func (c *Consumer) Start(ctx context.Context) {
 		if err := c.dbRepo.CreateSMS(&sms); err != nil {
 			// MySQL Error 1062 is Duplicate entry
 			if err.Error() != "" && (len(err.Error()) > 10 && err.Error()[:10] == "Error 1062") {
-				c.reader.CommitMessages(ctx, m)
+				if commitErr := c.reader.CommitMessages(ctx, m); commitErr != nil {
+					log.Printf("Failed to commit duplicate message: %v\n", commitErr)
+				}
 				continue
 			}
 			// If it's another DB error, we skip and DON'T commit, so Kafka will retry it later.

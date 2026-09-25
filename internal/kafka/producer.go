@@ -3,6 +3,7 @@ package kafka
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"sms/internal/domain"
 	"time"
 
@@ -49,6 +50,10 @@ func (p *Producer) Produce(ctx context.Context, sms *domain.SMS) error {
 }
 
 func (p *Producer) Close() {
-	p.expressWriter.Close()
-	p.bulkWriter.Close()
+	if err := p.expressWriter.Close(); err != nil {
+		log.Printf("Error closing express writer: %v\n", err)
+	}
+	if err := p.bulkWriter.Close(); err != nil {
+		log.Printf("Error closing bulk writer: %v\n", err)
+	}
 }
