@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"sms/internal/kafka"
+	"sms/internal/operator"
 	"sms/internal/repository"
 )
 
@@ -23,6 +24,7 @@ func main() {
 	}
 
 	redisRepo := repository.NewRedisRepository(redisAddr)
+	op := operator.NewMock()
 
 	workerType := os.Getenv("WORKER_TYPE")
 
@@ -34,7 +36,7 @@ func main() {
 	var expressConsumer, bulkConsumer *kafka.Consumer
 
 	if workerType == "express" || workerType == "" {
-		expressConsumer = kafka.NewConsumer(kafkaBrokers, "sms_express", "worker-group-express", mysqlRepo, redisRepo)
+		expressConsumer = kafka.NewConsumer(kafkaBrokers, "sms_express", "worker-group-express", mysqlRepo, redisRepo, op)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -43,7 +45,7 @@ func main() {
 	}
 
 	if workerType == "bulk" || workerType == "" {
-		bulkConsumer = kafka.NewConsumer(kafkaBrokers, "sms_bulk", "worker-group-bulk", mysqlRepo, redisRepo)
+		bulkConsumer = kafka.NewConsumer(kafkaBrokers, "sms_bulk", "worker-group-bulk", mysqlRepo, redisRepo, op)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

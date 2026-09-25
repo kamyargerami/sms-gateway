@@ -7,20 +7,18 @@ import (
 	"log"
 	"sms/internal/config"
 	"sms/internal/domain"
-	"sms/internal/operator"
-	"sms/internal/repository"
 
 	"github.com/segmentio/kafka-go"
 )
 
 type Consumer struct {
-	reader    *kafka.Reader
-	mockOp    *operator.Mock
-	mysqlRepo *repository.MySQLRepository
-	redisRepo *repository.RedisRepository
+	reader   *kafka.Reader
+	operator domain.SMSOperator
+	dbRepo   domain.DatabaseRepository
+	cache    domain.CacheRepository
 }
 
-func NewConsumer(brokers []string, topic string, groupID string, mysqlRepo *repository.MySQLRepository, redisRepo *repository.RedisRepository) *Consumer {
+func NewConsumer(brokers []string, topic string, groupID string, dbRepo domain.DatabaseRepository, cache domain.CacheRepository, op domain.SMSOperator) *Consumer {
 	return &Consumer{
 		reader: kafka.NewReader(kafka.ReaderConfig{
 			Brokers:  brokers,
@@ -29,9 +27,9 @@ func NewConsumer(brokers []string, topic string, groupID string, mysqlRepo *repo
 			MinBytes: 10e3, // 10KB
 			MaxBytes: 10e6, // 10MB
 		}),
-		mockOp:    operator.NewMock(),
-		mysqlRepo: mysqlRepo,
-		redisRepo: redisRepo,
+		operator: op,
+		dbRepo:   dbRepo,
+		cache:    cache,
 	}
 }
 
@@ -56,7 +54,7 @@ func (c *Consumer) Start(ctx context.Context) {
 		// 1. Idempotency Check: Insert into DB first.
 		// If it fails with Duplicate Entry, it means this message was already processed.
 		sms.Status = "PENDING"
-		if err := c.mysqlRepo.CreateSMS(&sms); err != nil {
+		if err := c.dbRepo.CreateSMS(&sms); err != nil {
 			// MySQL Error 1062 is Duplicate entry
 			if err.Error() != "" && (len(err.Error()) > 10 && err.Error()[:10] == "Error 1062") {
 				c.reader.CommitMessages(ctx, m)
@@ -68,7 +66,7 @@ func (c *Consumer) Start(ctx context.Context) {
 		}
 
 		// 2. Simulate sending to operator
-		success := c.mockOp.SendSMS(sms.ToNumber, sms.Text)
+		success := c.operator.SendSMS(sms.ToNumber, sms.Text)
 
 		status := "FAILED"
 		if success {
@@ -76,17 +74,17 @@ func (c *Consumer) Start(ctx context.Context) {
 		}
 
 		// 3. Update DB to final status
-		if err := c.mysqlRepo.UpdateSMSStatus(sms.ID, status); err != nil {
+		if err := c.dbRepo.UpdateSMSStatus(sms.ID, status); err != nil {
 			log.Printf("Error updating SMS status: %v\n", err)
 		}
 
 		// 4. Refund if failed
 		if !success {
 			cost := config.GetSMSCost()
-			if err := c.mysqlRepo.RefundUser(sms.UserID, cost); err != nil {
+			if err := c.dbRepo.RefundUser(sms.UserID, cost); err != nil {
 				log.Printf("Error refunding MySQL: %v\n", err)
 			}
-			if err := c.redisRepo.AddBalance(ctx, sms.UserID, cost); err != nil {
+			if err := c.cache.AddBalance(ctx, sms.UserID, cost); err != nil {
 				log.Printf("Error refunding Redis: %v\n", err)
 			}
 		}

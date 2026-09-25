@@ -8,24 +8,22 @@ import (
 
 	"sms/internal/config"
 	"sms/internal/domain"
-	"sms/internal/kafka"
-	"sms/internal/repository"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
 type Handler struct {
-	mysqlRepo *repository.MySQLRepository
-	redisRepo *repository.RedisRepository
-	producer  *kafka.Producer
+	dbRepo   domain.DatabaseRepository
+	cache    domain.CacheRepository
+	producer domain.MessageProducer
 }
 
-func NewHandler(mysqlRepo *repository.MySQLRepository, redisRepo *repository.RedisRepository, producer *kafka.Producer) *Handler {
+func NewHandler(dbRepo domain.DatabaseRepository, cache domain.CacheRepository, producer domain.MessageProducer) *Handler {
 	return &Handler{
-		mysqlRepo: mysqlRepo,
-		redisRepo: redisRepo,
-		producer:  producer,
+		dbRepo:   dbRepo,
+		cache:    cache,
+		producer: producer,
 	}
 }
 
@@ -42,14 +40,14 @@ func (h *Handler) TopUp(c *gin.Context) {
 	}
 
 	// Update DB
-	err := h.mysqlRepo.TopUpUser(req.UserID, req.Amount)
+	err := h.dbRepo.TopUpUser(req.UserID, req.Amount)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to top up in DB"})
 		return
 	}
 
 	// Update Redis (cache). If it doesn't exist, this will create it or next read will fetch.
-	err = h.redisRepo.AddBalance(c.Request.Context(), req.UserID, req.Amount)
+	err = h.cache.AddBalance(c.Request.Context(), req.UserID, req.Amount)
 	if err != nil {
 		log.Printf("Failed to sync balance to Redis: %v", err)
 		// We still return success since DB is source of truth, but log the error
@@ -71,7 +69,7 @@ func (h *Handler) SendSMS(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	// Use Lua script to atomically check and deduct balance
-	res, err := h.redisRepo.DeductBalance(ctx, req.UserID, cost)
+	res, err := h.cache.DeductBalance(ctx, req.UserID, cost)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check balance"})
 		return
@@ -79,20 +77,20 @@ func (h *Handler) SendSMS(c *gin.Context) {
 
 	if res == -1 {
 		// Key didn't exist in Redis. Fetch from MySQL.
-		balance, err := h.mysqlRepo.GetUserBalance(req.UserID)
+		balance, err := h.dbRepo.GetUserBalance(req.UserID)
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "User not found or db error"})
 			return
 		}
 
 		// Set in Redis
-		if err := h.redisRepo.SetBalance(ctx, req.UserID, balance); err != nil {
+		if err := h.cache.SetBalance(ctx, req.UserID, balance); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to sync cache"})
 			return
 		}
 
 		// Retry deduction
-		res, err = h.redisRepo.DeductBalance(ctx, req.UserID, cost)
+		res, err = h.cache.DeductBalance(ctx, req.UserID, cost)
 		if err != nil || res == -1 {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to deduct balance after sync"})
 			return
@@ -137,7 +135,7 @@ func (h *Handler) GetReports(c *gin.Context) {
 		return
 	}
 
-	reports, err := h.mysqlRepo.GetUserSMS(userID)
+	reports, err := h.dbRepo.GetUserSMS(userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch reports"})
 		return
