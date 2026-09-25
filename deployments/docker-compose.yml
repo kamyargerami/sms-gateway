@@ -1,0 +1,124 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    ports:
+      - "${MYSQL_PORT}:3306"
+    volumes:
+      - ../scripts/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin" ,"ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT}:6379"
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "${ZOOKEEPER_PORT}:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    depends_on:
+      - zookeeper
+    ports:
+      - "${KAFKA_PORT}:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  init-kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    depends_on:
+      - kafka
+    command: >
+      bash -c "
+      echo 'Waiting for Kafka to be ready...' &&
+      cub kafka-ready -b kafka:29092 1 30 &&
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic sms_express --replication-factor 1 --partitions ${KAFKA_PARTITIONS_EXPRESS} &&
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic sms_bulk --replication-factor 1 --partitions ${KAFKA_PARTITIONS_BULK}
+      "
+
+  api:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+      target: api
+    image: sms-api
+    ports:
+      - "${API_PORT}:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      init-kafka:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+    environment:
+      - DB_DSN=${MYSQL_USER}:${MYSQL_PASSWORD}@tcp(mysql:3306)/${MYSQL_DATABASE}?parseTime=true
+      - REDIS_ADDR=redis:6379
+      - KAFKA_BROKERS=kafka:29092
+      - SERVER_PORT=8080
+      - SMS_COST=${SMS_COST}
+
+  worker-express:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+      target: worker
+    image: sms-worker
+    depends_on:
+      mysql:
+        condition: service_healthy
+      init-kafka:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+    environment:
+      - DB_DSN=${MYSQL_USER}:${MYSQL_PASSWORD}@tcp(mysql:3306)/${MYSQL_DATABASE}?parseTime=true
+      - REDIS_ADDR=redis:6379
+      - KAFKA_BROKERS=kafka:29092
+      - WORKER_TYPE=express
+      - SMS_COST=${SMS_COST}
+    deploy:
+      replicas: ${WORKER_EXPRESS_REPLICAS}
+
+  worker-bulk:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+      target: worker
+    image: sms-worker
+    depends_on:
+      mysql:
+        condition: service_healthy
+      init-kafka:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+    environment:
+      - DB_DSN=${MYSQL_USER}:${MYSQL_PASSWORD}@tcp(mysql:3306)/${MYSQL_DATABASE}?parseTime=true
+      - REDIS_ADDR=redis:6379
+      - KAFKA_BROKERS=kafka:29092
+      - WORKER_TYPE=bulk
+      - SMS_COST=${SMS_COST}
+    deploy:
+      replicas: ${WORKER_BULK_REPLICAS}
