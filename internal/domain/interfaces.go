@@ -2,7 +2,7 @@ package domain
 
 import "context"
 
-// Transaction Manager (Unit of Work)
+// Transaction Manager
 type TransactionManager interface {
 	WithTransaction(ctx context.Context, fn func(ctx context.Context) error) error
 }
@@ -19,8 +19,8 @@ type SMSRepository interface {
 	GetByUserID(ctx context.Context, userID int) ([]SMS, error)
 }
 
-type TransactionRepository interface {
-	Create(ctx context.Context, userID int, amount int, transactionType string) error
+type CreditRepository interface {
+	Create(ctx context.Context, userID int, amount int, creditType string) error
 }
 
 // Cache interfaces

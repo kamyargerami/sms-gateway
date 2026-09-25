@@ -150,17 +150,17 @@ func (r *MySQLSMSRepository) GetByUserID(ctx context.Context, userID int) ([]dom
 }
 
 // Transaction Repository
-type MySQLTransactionRepository struct {
+type MySQLCreditRepository struct {
 	db *sql.DB
 }
 
-func NewMySQLTransactionRepository(db *sql.DB) *MySQLTransactionRepository {
-	return &MySQLTransactionRepository{db: db}
+func NewMySQLCreditRepository(db *sql.DB) *MySQLCreditRepository {
+	return &MySQLCreditRepository{db: db}
 }
 
-func (r *MySQLTransactionRepository) Create(ctx context.Context, userID int, amount int, transactionType string) error {
+func (r *MySQLCreditRepository) Create(ctx context.Context, userID int, amount int, creditType string) error {
 	q := getQueryer(ctx, r.db)
-	_, err := q.ExecContext(ctx, "INSERT INTO transactions (user_id, amount, type) VALUES (?, ?, ?)", userID, amount, transactionType)
+	_, err := q.ExecContext(ctx, "INSERT INTO credits (user_id, amount, type) VALUES (?, ?, ?)", userID, amount, creditType)
 	return err
 }
 

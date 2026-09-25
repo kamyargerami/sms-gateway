@@ -18,7 +18,7 @@ type Handler struct {
 	transactionManager domain.TransactionManager
 	userRepo           domain.UserRepository
 	smsRepo            domain.SMSRepository
-	transactionRepo    domain.TransactionRepository
+	creditRepo         domain.CreditRepository
 	cache              domain.CacheRepository
 	producer           domain.MessageProducer
 }
@@ -27,7 +27,7 @@ func NewHandler(
 	transactionManager domain.TransactionManager,
 	userRepo domain.UserRepository,
 	smsRepo domain.SMSRepository,
-	transactionRepo domain.TransactionRepository,
+	creditRepo domain.CreditRepository,
 	cache domain.CacheRepository,
 	producer domain.MessageProducer,
 ) *Handler {
@@ -35,7 +35,7 @@ func NewHandler(
 		transactionManager: transactionManager,
 		userRepo:           userRepo,
 		smsRepo:            smsRepo,
-		transactionRepo:    transactionRepo,
+		creditRepo:         creditRepo,
 		cache:              cache,
 		producer:           producer,
 	}
@@ -60,7 +60,7 @@ func (h *Handler) TopUp(c *gin.Context) {
 		if err := h.userRepo.UpdateBalance(transactionCtx, req.UserID, req.Amount); err != nil {
 			return err
 		}
-		return h.transactionRepo.Create(transactionCtx, req.UserID, req.Amount, "TOPUP")
+		return h.creditRepo.Create(transactionCtx, req.UserID, req.Amount, "TOPUP")
 	})
 
 	if err != nil {

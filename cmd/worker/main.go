@@ -26,7 +26,7 @@ func main() {
 	transactionManager := repository.NewMySQLTransactionManager(db)
 	userRepo := repository.NewMySQLUserRepository(db)
 	smsRepo := repository.NewMySQLSMSRepository(db)
-	transactionRepo := repository.NewMySQLTransactionRepository(db)
+	creditRepo := repository.NewMySQLCreditRepository(db)
 	redisRepo := repository.NewRedisRepository(redisAddr)
 
 	op := operator.NewMock()
@@ -43,7 +43,7 @@ func main() {
 	if workerType == "express" || workerType == "" {
 		expressConsumer = kafka.NewConsumer(
 			kafkaBrokers, "sms_express", "worker-group-express",
-			transactionManager, userRepo, smsRepo, transactionRepo, redisRepo, op,
+			transactionManager, userRepo, smsRepo, creditRepo, redisRepo, op,
 		)
 		wg.Add(1)
 		go func() {
@@ -55,7 +55,7 @@ func main() {
 	if workerType == "bulk" || workerType == "" {
 		bulkConsumer = kafka.NewConsumer(
 			kafkaBrokers, "sms_bulk", "worker-group-bulk",
-			transactionManager, userRepo, smsRepo, transactionRepo, redisRepo, op,
+			transactionManager, userRepo, smsRepo, creditRepo, redisRepo, op,
 		)
 		wg.Add(1)
 		go func() {

@@ -17,7 +17,7 @@ type Consumer struct {
 	transactionManager domain.TransactionManager
 	userRepo           domain.UserRepository
 	smsRepo            domain.SMSRepository
-	transactionRepo    domain.TransactionRepository
+	creditRepo         domain.CreditRepository
 	cache              domain.CacheRepository
 }
 
@@ -28,7 +28,7 @@ func NewConsumer(
 	transactionManager domain.TransactionManager,
 	userRepo domain.UserRepository,
 	smsRepo domain.SMSRepository,
-	transactionRepo domain.TransactionRepository,
+	creditRepo domain.CreditRepository,
 	cache domain.CacheRepository,
 	op domain.SMSOperator,
 ) *Consumer {
@@ -44,7 +44,7 @@ func NewConsumer(
 		transactionManager: transactionManager,
 		userRepo:           userRepo,
 		smsRepo:            smsRepo,
-		transactionRepo:    transactionRepo,
+		creditRepo:         creditRepo,
 		cache:              cache,
 	}
 }
@@ -80,7 +80,7 @@ func (c *Consumer) Start(ctx context.Context) {
 			if err := c.smsRepo.Create(transactionCtx, &sms); err != nil {
 				return err
 			}
-			return c.transactionRepo.Create(transactionCtx, sms.UserID, cost, "SMS_SENT")
+			return c.creditRepo.Create(transactionCtx, sms.UserID, cost, "SMS_SENT")
 		})
 
 		if err != nil {
@@ -113,7 +113,7 @@ func (c *Consumer) Start(ctx context.Context) {
 				if err := c.userRepo.UpdateBalance(transactionCtx, sms.UserID, cost); err != nil {
 					return err
 				}
-				return c.transactionRepo.Create(transactionCtx, sms.UserID, cost, "REFUND")
+				return c.creditRepo.Create(transactionCtx, sms.UserID, cost, "REFUND")
 			})
 			if err != nil {
 				log.Printf("Error refunding MySQL: %v\n", err)

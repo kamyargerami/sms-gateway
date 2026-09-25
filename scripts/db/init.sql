@@ -17,7 +17,7 @@ CREATE TABLE sms_records (
     INDEX idx_user_created (user_id, created_at DESC)
 );
 
-CREATE TABLE transactions (
+CREATE TABLE credits (
     id VARCHAR(36) DEFAULT (UUID()) PRIMARY KEY,
     user_id INT UNSIGNED NOT NULL,
     amount INT NOT NULL,

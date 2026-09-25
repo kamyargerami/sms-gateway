@@ -29,13 +29,13 @@ func main() {
 	transactionManager := repository.NewMySQLTransactionManager(db)
 	userRepo := repository.NewMySQLUserRepository(db)
 	smsRepo := repository.NewMySQLSMSRepository(db)
-	transactionRepo := repository.NewMySQLTransactionRepository(db)
+	creditRepo := repository.NewMySQLCreditRepository(db)
 
 	redisRepo := repository.NewRedisRepository(redisAddr)
 	producer := kafka.NewProducer(kafkaBrokers)
 	defer producer.Close()
 
-	handler := delivery.NewHandler(transactionManager, userRepo, smsRepo, transactionRepo, redisRepo, producer)
+	handler := delivery.NewHandler(transactionManager, userRepo, smsRepo, creditRepo, redisRepo, producer)
 
 	r := gin.Default()
 
