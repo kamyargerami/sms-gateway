@@ -12,10 +12,10 @@ type RedisRepository struct {
 }
 
 func NewRedisRepository(addr string) *RedisRepository {
-	rdb := redis.NewClient(&redis.Options{
+	redisClient := redis.NewClient(&redis.Options{
 		Addr: addr,
 	})
-	return &RedisRepository{client: rdb}
+	return &RedisRepository{client: redisClient}
 }
 
 // luaScript checks balance and decrements if sufficient.
@@ -34,10 +34,10 @@ end
 `
 
 // DeductBalance atomic deduction using Lua script
-func (r *RedisRepository) DeductBalance(ctx context.Context, userID int, cost int) (int, error) {
+func (repository *RedisRepository) DeductBalance(goContext context.Context, userID int, cost int) (int, error) {
 	key := fmt.Sprintf("user_balance:%d", userID)
 
-	result, err := r.client.Eval(ctx, luaScript, []string{key}, cost).Result()
+	result, err := repository.client.Eval(goContext, luaScript, []string{key}, cost).Result()
 	if err != nil {
 		return 0, err
 	}
@@ -51,9 +51,9 @@ func (r *RedisRepository) DeductBalance(ctx context.Context, userID int, cost in
 }
 
 // SetBalance initializes the balance in Redis
-func (r *RedisRepository) SetBalance(ctx context.Context, userID int, balance int) error {
+func (repository *RedisRepository) SetBalance(goContext context.Context, userID int, balance int) error {
 	key := fmt.Sprintf("user_balance:%d", userID)
-	return r.client.Set(ctx, key, balance, 0).Err()
+	return repository.client.Set(goContext, key, balance, 0).Err()
 }
 
 // luaAddScript atomically increments if key exists.
@@ -65,9 +65,9 @@ return 0
 `
 
 // AddBalance increments the balance in Redis atomically
-func (r *RedisRepository) AddBalance(ctx context.Context, userID int, amount int) error {
+func (repository *RedisRepository) AddBalance(goContext context.Context, userID int, amount int) error {
 	key := fmt.Sprintf("user_balance:%d", userID)
 
-	_, err := r.client.Eval(ctx, luaAddScript, []string{key}, amount).Result()
+	_, err := repository.client.Eval(goContext, luaAddScript, []string{key}, amount).Result()
 	return err
 }

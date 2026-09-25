@@ -13,13 +13,13 @@ import (
 type transactionKey struct{}
 
 // InjectTransaction puts the sql.Tx into context
-func InjectTransaction(ctx context.Context, sqlTransaction *sql.Tx) context.Context {
-	return context.WithValue(ctx, transactionKey{}, sqlTransaction)
+func InjectTransaction(goContext context.Context, sqlTransaction *sql.Tx) context.Context {
+	return context.WithValue(goContext, transactionKey{}, sqlTransaction)
 }
 
 // ExtractTransaction pulls the sql.Tx from context if it exists
-func ExtractTransaction(ctx context.Context) *sql.Tx {
-	if sqlTransaction, ok := ctx.Value(transactionKey{}).(*sql.Tx); ok {
+func ExtractTransaction(goContext context.Context) *sql.Tx {
+	if sqlTransaction, ok := goContext.Value(transactionKey{}).(*sql.Tx); ok {
 		return sqlTransaction
 	}
 	return nil
@@ -27,13 +27,13 @@ func ExtractTransaction(ctx context.Context) *sql.Tx {
 
 // Queryer is an interface that matches both *sql.DB and *sql.Tx
 type Queryer interface {
-	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
-	QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
-	QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
+	ExecContext(goContext context.Context, query string, args ...interface{}) (sql.Result, error)
+	QueryContext(goContext context.Context, query string, args ...interface{}) (*sql.Rows, error)
+	QueryRowContext(goContext context.Context, query string, args ...interface{}) *sql.Row
 }
 
-func getQueryer(ctx context.Context, db *sql.DB) Queryer {
-	if sqlTransaction := ExtractTransaction(ctx); sqlTransaction != nil {
+func getQueryer(goContext context.Context, db *sql.DB) Queryer {
+	if sqlTransaction := ExtractTransaction(goContext); sqlTransaction != nil {
 		return sqlTransaction
 	}
 	return db
@@ -48,13 +48,13 @@ func NewMySQLTransactionManager(db *sql.DB) *MySQLTransactionManager {
 	return &MySQLTransactionManager{db: db}
 }
 
-func (m *MySQLTransactionManager) WithTransaction(ctx context.Context, fn func(ctx context.Context) error) error {
-	sqlTransaction, err := m.db.BeginTx(ctx, nil)
+func (manager *MySQLTransactionManager) WithTransaction(goContext context.Context, fn func(goContext context.Context) error) error {
+	sqlTransaction, err := manager.db.BeginTx(goContext, nil)
 	if err != nil {
 		return err
 	}
 
-	transactionCtx := InjectTransaction(ctx, sqlTransaction)
+	transactionCtx := InjectTransaction(goContext, sqlTransaction)
 
 	if err := fn(transactionCtx); err != nil {
 		if rbErr := sqlTransaction.Rollback(); rbErr != nil {
@@ -74,10 +74,10 @@ func NewMySQLUserRepository(db *sql.DB) *MySQLUserRepository {
 	return &MySQLUserRepository{db: db}
 }
 
-func (r *MySQLUserRepository) GetBalance(ctx context.Context, userID int) (int, error) {
-	q := getQueryer(ctx, r.db)
+func (repository *MySQLUserRepository) GetBalance(goContext context.Context, userID int) (int, error) {
+	queryer := getQueryer(goContext, repository.db)
 	var balance int
-	err := q.QueryRowContext(ctx, "SELECT balance FROM users WHERE id = ?", userID).Scan(&balance)
+	err := queryer.QueryRowContext(goContext, "SELECT balance FROM users WHERE id = ?", userID).Scan(&balance)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return 0, fmt.Errorf("user not found")
@@ -87,9 +87,9 @@ func (r *MySQLUserRepository) GetBalance(ctx context.Context, userID int) (int, 
 	return balance, nil
 }
 
-func (r *MySQLUserRepository) UpdateBalance(ctx context.Context, userID int, amount int) error {
-	q := getQueryer(ctx, r.db)
-	_, err := q.ExecContext(ctx, "UPDATE users SET balance = balance + ? WHERE id = ?", amount, userID)
+func (repository *MySQLUserRepository) UpdateBalance(goContext context.Context, userID int, amount int) error {
+	queryer := getQueryer(goContext, repository.db)
+	_, err := queryer.ExecContext(goContext, "UPDATE users SET balance = balance + ? WHERE id = ?", amount, userID)
 	return err
 }
 
@@ -102,9 +102,9 @@ func NewMySQLSMSRepository(db *sql.DB) *MySQLSMSRepository {
 	return &MySQLSMSRepository{db: db}
 }
 
-func (r *MySQLSMSRepository) Create(ctx context.Context, sms *domain.SMS) error {
-	q := getQueryer(ctx, r.db)
-	_, err := q.ExecContext(ctx,
+func (repository *MySQLSMSRepository) Create(goContext context.Context, sms *domain.SMS) error {
+	queryer := getQueryer(goContext, repository.db)
+	_, err := queryer.ExecContext(goContext,
 		"INSERT INTO sms_records (id, user_id, to_number, text, status, is_express) VALUES (?, ?, ?, ?, ?, ?)",
 		sms.ID, sms.UserID, sms.ToNumber, sms.Text, sms.Status, sms.IsExpress,
 	)
@@ -117,29 +117,29 @@ func (r *MySQLSMSRepository) Create(ctx context.Context, sms *domain.SMS) error 
 	return nil
 }
 
-func (r *MySQLSMSRepository) UpdateStatus(ctx context.Context, id string, status string) error {
-	q := getQueryer(ctx, r.db)
-	_, err := q.ExecContext(ctx, "UPDATE sms_records SET status = ? WHERE id = ?", status, id)
+func (repository *MySQLSMSRepository) UpdateStatus(goContext context.Context, id string, status string) error {
+	queryer := getQueryer(goContext, repository.db)
+	_, err := queryer.ExecContext(goContext, "UPDATE sms_records SET status = ? WHERE id = ?", status, id)
 	return err
 }
 
-func (r *MySQLSMSRepository) GetByID(ctx context.Context, id string) (*domain.SMS, error) {
-	q := getQueryer(ctx, r.db)
-	var s domain.SMS
-	err := q.QueryRowContext(ctx, "SELECT id, user_id, to_number, text, status, is_express, created_at, updated_at FROM sms_records WHERE id = ?", id).
-		Scan(&s.ID, &s.UserID, &s.ToNumber, &s.Text, &s.Status, &s.IsExpress, &s.CreatedAt, &s.UpdatedAt)
+func (repository *MySQLSMSRepository) GetByID(goContext context.Context, id string) (*domain.SMS, error) {
+	queryer := getQueryer(goContext, repository.db)
+	var smsRecord domain.SMS
+	err := queryer.QueryRowContext(goContext, "SELECT id, user_id, to_number, text, status, is_express, created_at, updated_at FROM sms_records WHERE id = ?", id).
+		Scan(&smsRecord.ID, &smsRecord.UserID, &smsRecord.ToNumber, &smsRecord.Text, &smsRecord.Status, &smsRecord.IsExpress, &smsRecord.CreatedAt, &smsRecord.UpdatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("sms not found")
 		}
 		return nil, err
 	}
-	return &s, nil
+	return &smsRecord, nil
 }
 
-func (r *MySQLSMSRepository) GetByUserID(ctx context.Context, userID int) ([]domain.SMS, error) {
-	q := getQueryer(ctx, r.db)
-	rows, err := q.QueryContext(ctx, "SELECT id, user_id, to_number, text, status, is_express, created_at, updated_at FROM sms_records WHERE user_id = ? ORDER BY created_at DESC LIMIT 100", userID)
+func (repository *MySQLSMSRepository) GetByUserID(goContext context.Context, userID int) ([]domain.SMS, error) {
+	queryer := getQueryer(goContext, repository.db)
+	rows, err := queryer.QueryContext(goContext, "SELECT id, user_id, to_number, text, status, is_express, created_at, updated_at FROM sms_records WHERE user_id = ? ORDER BY created_at DESC LIMIT 100", userID)
 	if err != nil {
 		return nil, err
 	}
@@ -149,11 +149,11 @@ func (r *MySQLSMSRepository) GetByUserID(ctx context.Context, userID int) ([]dom
 
 	var smsList []domain.SMS
 	for rows.Next() {
-		var s domain.SMS
-		if err := rows.Scan(&s.ID, &s.UserID, &s.ToNumber, &s.Text, &s.Status, &s.IsExpress, &s.CreatedAt, &s.UpdatedAt); err != nil {
+		var smsRecord domain.SMS
+		if err := rows.Scan(&smsRecord.ID, &smsRecord.UserID, &smsRecord.ToNumber, &smsRecord.Text, &smsRecord.Status, &smsRecord.IsExpress, &smsRecord.CreatedAt, &smsRecord.UpdatedAt); err != nil {
 			return nil, err
 		}
-		smsList = append(smsList, s)
+		smsList = append(smsList, smsRecord)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -172,9 +172,9 @@ func NewMySQLCreditRepository(db *sql.DB) *MySQLCreditRepository {
 	return &MySQLCreditRepository{db: db}
 }
 
-func (r *MySQLCreditRepository) Create(ctx context.Context, userID int, amount int, creditType string) error {
-	q := getQueryer(ctx, r.db)
-	_, err := q.ExecContext(ctx, "INSERT INTO credits (user_id, amount, type) VALUES (?, ?, ?)", userID, amount, creditType)
+func (repository *MySQLCreditRepository) Create(goContext context.Context, userID int, amount int, creditType string) error {
+	queryer := getQueryer(goContext, repository.db)
+	_, err := queryer.ExecContext(goContext, "INSERT INTO credits (user_id, amount, type) VALUES (?, ?, ?)", userID, amount, creditType)
 	return err
 }
 

@@ -41,115 +41,115 @@ func NewHandler(
 	}
 }
 
-func (h *Handler) TopUp(c *gin.Context) {
-	var req domain.TopUpRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+func (handler *Handler) TopUp(ginCtx *gin.Context) {
+	var request domain.TopUpRequest
+	if err := ginCtx.ShouldBindJSON(&request); err != nil {
+		ginCtx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	if req.Amount <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Amount must be greater than zero"})
+	if request.Amount <= 0 {
+		ginCtx.JSON(http.StatusBadRequest, gin.H{"error": "Amount must be greater than zero"})
 		return
 	}
 
-	ctx := c.Request.Context()
+	goContext := ginCtx.Request.Context()
 
 	// Update DB atomically
-	err := h.transactionManager.WithTransaction(ctx, func(transactionCtx context.Context) error {
-		if err := h.userRepo.UpdateBalance(transactionCtx, req.UserID, req.Amount); err != nil {
+	err := handler.transactionManager.WithTransaction(goContext, func(transactionCtx context.Context) error {
+		if err := handler.userRepo.UpdateBalance(transactionCtx, request.UserID, request.Amount); err != nil {
 			return err
 		}
-		return h.creditRepo.Create(transactionCtx, req.UserID, req.Amount, "TOPUP")
+		return handler.creditRepo.Create(transactionCtx, request.UserID, request.Amount, "TOPUP")
 	})
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to top up in DB"})
+		ginCtx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to top up in DB"})
 		return
 	}
 
 	// Update Redis (cache)
-	err = h.cache.AddBalance(ctx, req.UserID, req.Amount)
+	err = handler.cache.AddBalance(goContext, request.UserID, request.Amount)
 	if err != nil {
 		log.Printf("Failed to sync balance to Redis: %v", err)
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Top up successful"})
+	ginCtx.JSON(http.StatusOK, gin.H{"message": "Top up successful"})
 }
 
-func (h *Handler) SendSMS(c *gin.Context) {
-	var req domain.SendSMSRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+func (handler *Handler) SendSMS(ginCtx *gin.Context) {
+	var request domain.SendSMSRequest
+	if err := ginCtx.ShouldBindJSON(&request); err != nil {
+		ginCtx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
 	cost := config.GetSMSCost()
-	ctx := c.Request.Context()
+	goContext := ginCtx.Request.Context()
 
-	res, err := h.cache.DeductBalance(ctx, req.UserID, cost)
+	result, err := handler.cache.DeductBalance(goContext, request.UserID, cost)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check balance"})
+		ginCtx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check balance"})
 		return
 	}
 
-	if res == -1 {
-		balance, err := h.userRepo.GetBalance(ctx, req.UserID)
+	if result == -1 {
+		balance, err := handler.userRepo.GetBalance(goContext, request.UserID)
 		if err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "User not found or db error"})
+			ginCtx.JSON(http.StatusNotFound, gin.H{"error": "User not found or db error"})
 			return
 		}
 
-		if err := h.cache.SetBalance(ctx, req.UserID, balance); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to sync cache"})
+		if err := handler.cache.SetBalance(goContext, request.UserID, balance); err != nil {
+			ginCtx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to sync cache"})
 			return
 		}
 
-		res, err = h.cache.DeductBalance(ctx, req.UserID, cost)
-		if err != nil || res == -1 {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to deduct balance after sync"})
+		result, err = handler.cache.DeductBalance(goContext, request.UserID, cost)
+		if err != nil || result == -1 {
+			ginCtx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to deduct balance after sync"})
 			return
 		}
 	}
 
-	if res == 0 {
-		c.JSON(http.StatusPaymentRequired, gin.H{"error": "Insufficient balance"})
+	if result == 0 {
+		ginCtx.JSON(http.StatusPaymentRequired, gin.H{"error": "Insufficient balance"})
 		return
 	}
 
 	sms := &domain.SMS{
 		ID:        uuid.New().String(),
-		UserID:    req.UserID,
-		ToNumber:  req.ToNumber,
-		Text:      req.Text,
+		UserID:    request.UserID,
+		ToNumber:  request.ToNumber,
+		Text:      request.Text,
 		Status:    "PENDING",
-		IsExpress: req.IsExpress,
+		IsExpress: request.IsExpress,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
 
-	if err := h.producer.Produce(ctx, sms); err != nil {
+	if err := handler.producer.Produce(goContext, sms); err != nil {
 		log.Printf("Failed to publish to Kafka: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to queue SMS"})
+		ginCtx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to queue SMS"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "SMS queued successfully", "id": sms.ID})
+	ginCtx.JSON(http.StatusOK, gin.H{"message": "SMS queued successfully", "id": sms.ID})
 }
 
-func (h *Handler) GetReports(c *gin.Context) {
-	userIDStr := c.Param("user_id")
+func (handler *Handler) GetReports(ginCtx *gin.Context) {
+	userIDStr := ginCtx.Param("user_id")
 	userID, err := strconv.Atoi(userIDStr)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+		ginCtx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
 		return
 	}
 
-	reports, err := h.smsRepo.GetByUserID(c.Request.Context(), userID)
+	reports, err := handler.smsRepo.GetByUserID(ginCtx.Request.Context(), userID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch reports"})
+		ginCtx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch reports"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"reports": reports})
+	ginCtx.JSON(http.StatusOK, gin.H{"reports": reports})
 }

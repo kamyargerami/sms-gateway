@@ -29,12 +29,12 @@ func main() {
 	creditRepo := repository.NewMySQLCreditRepository(db)
 	redisRepo := repository.NewRedisRepository(redisAddr)
 
-	op := operator.NewMock()
+	operatorService := operator.NewMock()
 
 	workerType := os.Getenv("WORKER_TYPE")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	var wg sync.WaitGroup
+	goContext, cancel := context.WithCancel(context.Background())
+	var waitGroup sync.WaitGroup
 
 	log.Printf("Starting SMS Workers... (Mode: %s)\n", workerType)
 
@@ -43,24 +43,24 @@ func main() {
 	if workerType == "express" || workerType == "" {
 		expressConsumer = kafka.NewConsumer(
 			kafkaBrokers, "sms_express", "worker-group-express",
-			transactionManager, userRepo, smsRepo, creditRepo, redisRepo, op,
+			transactionManager, userRepo, smsRepo, creditRepo, redisRepo, operatorService,
 		)
-		wg.Add(1)
+		waitGroup.Add(1)
 		go func() {
-			defer wg.Done()
-			expressConsumer.Start(ctx)
+			defer waitGroup.Done()
+			expressConsumer.Start(goContext)
 		}()
 	}
 
 	if workerType == "bulk" || workerType == "" {
 		bulkConsumer = kafka.NewConsumer(
 			kafkaBrokers, "sms_bulk", "worker-group-bulk",
-			transactionManager, userRepo, smsRepo, creditRepo, redisRepo, op,
+			transactionManager, userRepo, smsRepo, creditRepo, redisRepo, operatorService,
 		)
-		wg.Add(1)
+		waitGroup.Add(1)
 		go func() {
-			defer wg.Done()
-			bulkConsumer.Start(ctx)
+			defer waitGroup.Done()
+			bulkConsumer.Start(goContext)
 		}()
 	}
 
@@ -81,6 +81,6 @@ func main() {
 		}
 	}
 
-	wg.Wait()
+	waitGroup.Wait()
 	log.Println("Workers stopped gracefully")
 }

@@ -32,28 +32,28 @@ func NewProducer(brokers []string) *Producer {
 	}
 }
 
-func (p *Producer) Produce(ctx context.Context, sms *domain.SMS) error {
-	msgBytes, err := json.Marshal(sms)
+func (producer *Producer) Produce(goContext context.Context, sms *domain.SMS) error {
+	messageBytes, err := json.Marshal(sms)
 	if err != nil {
 		return err
 	}
 
-	msg := kafka.Message{
+	message := kafka.Message{
 		Key:   []byte(sms.ID),
-		Value: msgBytes,
+		Value: messageBytes,
 	}
 
 	if sms.IsExpress {
-		return p.expressWriter.WriteMessages(ctx, msg)
+		return producer.expressWriter.WriteMessages(goContext, message)
 	}
-	return p.bulkWriter.WriteMessages(ctx, msg)
+	return producer.bulkWriter.WriteMessages(goContext, message)
 }
 
-func (p *Producer) Close() {
-	if err := p.expressWriter.Close(); err != nil {
+func (producer *Producer) Close() {
+	if err := producer.expressWriter.Close(); err != nil {
 		log.Printf("Error closing express writer: %v\n", err)
 	}
-	if err := p.bulkWriter.Close(); err != nil {
+	if err := producer.bulkWriter.Close(); err != nil {
 		log.Printf("Error closing bulk writer: %v\n", err)
 	}
 }

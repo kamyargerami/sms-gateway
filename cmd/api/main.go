@@ -12,7 +12,7 @@ import (
 )
 
 func main() {
-	dbDsn := os.Getenv("DB_DSN")
+	databaseDSN := os.Getenv("DB_DSN")
 	redisAddr := os.Getenv("REDIS_ADDR")
 	kafkaBrokers := []string{os.Getenv("KAFKA_BROKERS")}
 	port := os.Getenv("SERVER_PORT")
@@ -21,7 +21,7 @@ func main() {
 		port = "8080"
 	}
 
-	db, err := repository.ConnectDB(dbDsn)
+	db, err := repository.ConnectDB(databaseDSN)
 	if err != nil {
 		log.Fatalf("Failed to connect to MySQL: %v", err)
 	}
@@ -37,9 +37,9 @@ func main() {
 
 	handler := delivery.NewHandler(transactionManager, userRepo, smsRepo, creditRepo, redisRepo, producer)
 
-	r := gin.Default()
+	router := gin.Default()
 
-	v1 := r.Group("/api/v1")
+	v1 := router.Group("/api/v1")
 	{
 		v1.POST("/users/charge", handler.TopUp)
 		v1.POST("/sms/send", handler.SendSMS)
@@ -47,7 +47,7 @@ func main() {
 	}
 
 	log.Printf("Starting API server on port %s", port)
-	if err := r.Run(":" + port); err != nil {
+	if err := router.Run(":" + port); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }
