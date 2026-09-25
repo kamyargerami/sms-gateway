@@ -1,7 +1,11 @@
 services:
   mysql:
     image: mysql:8.0
-    command: [ "--max_connections=${MYSQL_MAX_CONNECTIONS:-200}" ]
+    command:
+      - "--max_connections=${MYSQL_MAX_CONNECTIONS}"
+      # Pin strict mode explicitly: balances are BIGINT UNSIGNED, and without strict
+      # mode MySQL would silently clamp a negative result to 0 instead of failing.
+      - "--sql-mode=STRICT_ALL_TABLES,ONLY_FULL_GROUP_BY,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION"
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
@@ -86,13 +90,13 @@ services:
       redis:
         condition: service_started
     environment:
-      - DB_DSN=${MYSQL_USER}:${MYSQL_PASSWORD}@tcp(mysql:3306)/${MYSQL_DATABASE}?parseTime=true
-      - REDIS_ADDR=redis:6379
+      - DATABASE_DSN=${MYSQL_USER}:${MYSQL_PASSWORD}@tcp(mysql:3306)/${MYSQL_DATABASE}?parseTime=true
+      - REDIS_ADDRESS=redis:6379
       - KAFKA_BROKERS=kafka:29092
       - SERVER_PORT=8080
-      - DB_MAX_OPEN_CONNS=${API_DB_MAX_OPEN_CONNS:-50}
-      - DB_MAX_IDLE_CONNS=${API_DB_MAX_IDLE_CONNS:-25}
-      - DB_CONN_MAX_LIFETIME=${DB_CONN_MAX_LIFETIME:-5m}
+      - DATABASE_MAX_OPEN_CONNECTIONS=${API_DATABASE_MAX_OPEN_CONNECTIONS}
+      - DATABASE_MAX_IDLE_CONNECTIONS=${API_DATABASE_MAX_IDLE_CONNECTIONS}
+      - DATABASE_CONNECTION_MAX_LIFETIME=${DATABASE_CONNECTION_MAX_LIFETIME}
       - SMS_COST=${SMS_COST}
 
   worker-express:
@@ -110,13 +114,13 @@ services:
       redis:
         condition: service_started
     environment:
-      - DB_DSN=${MYSQL_USER}:${MYSQL_PASSWORD}@tcp(mysql:3306)/${MYSQL_DATABASE}?parseTime=true
-      - REDIS_ADDR=redis:6379
+      - DATABASE_DSN=${MYSQL_USER}:${MYSQL_PASSWORD}@tcp(mysql:3306)/${MYSQL_DATABASE}?parseTime=true
+      - REDIS_ADDRESS=redis:6379
       - KAFKA_BROKERS=kafka:29092
       - WORKER_TYPE=express
-      - DB_MAX_OPEN_CONNS=${WORKER_DB_MAX_OPEN_CONNS:-10}
-      - DB_MAX_IDLE_CONNS=${WORKER_DB_MAX_IDLE_CONNS:-5}
-      - DB_CONN_MAX_LIFETIME=${DB_CONN_MAX_LIFETIME:-5m}
+      - DATABASE_MAX_OPEN_CONNECTIONS=${WORKER_DATABASE_MAX_OPEN_CONNECTIONS}
+      - DATABASE_MAX_IDLE_CONNECTIONS=${WORKER_DATABASE_MAX_IDLE_CONNECTIONS}
+      - DATABASE_CONNECTION_MAX_LIFETIME=${DATABASE_CONNECTION_MAX_LIFETIME}
       - SMS_COST=${SMS_COST}
     deploy:
       replicas: ${WORKER_EXPRESS_REPLICAS}
@@ -136,13 +140,13 @@ services:
       redis:
         condition: service_started
     environment:
-      - DB_DSN=${MYSQL_USER}:${MYSQL_PASSWORD}@tcp(mysql:3306)/${MYSQL_DATABASE}?parseTime=true
-      - REDIS_ADDR=redis:6379
+      - DATABASE_DSN=${MYSQL_USER}:${MYSQL_PASSWORD}@tcp(mysql:3306)/${MYSQL_DATABASE}?parseTime=true
+      - REDIS_ADDRESS=redis:6379
       - KAFKA_BROKERS=kafka:29092
       - WORKER_TYPE=bulk
-      - DB_MAX_OPEN_CONNS=${WORKER_DB_MAX_OPEN_CONNS:-10}
-      - DB_MAX_IDLE_CONNS=${WORKER_DB_MAX_IDLE_CONNS:-5}
-      - DB_CONN_MAX_LIFETIME=${DB_CONN_MAX_LIFETIME:-5m}
+      - DATABASE_MAX_OPEN_CONNECTIONS=${WORKER_DATABASE_MAX_OPEN_CONNECTIONS}
+      - DATABASE_MAX_IDLE_CONNECTIONS=${WORKER_DATABASE_MAX_IDLE_CONNECTIONS}
+      - DATABASE_CONNECTION_MAX_LIFETIME=${DATABASE_CONNECTION_MAX_LIFETIME}
       - SMS_COST=${SMS_COST}
     deploy:
       replicas: ${WORKER_BULK_REPLICAS}
