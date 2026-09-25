@@ -19,8 +19,8 @@ import (
 )
 
 func main() {
-	databaseDSN := os.Getenv("DB_DSN")
-	redisAddress := os.Getenv("REDIS_ADDR")
+	databaseDSN := os.Getenv("DATABASE_DSN")
+	redisAddress := os.Getenv("REDIS_ADDRESS")
 	kafkaBrokers := config.GetKafkaBrokers()
 	port := os.Getenv("SERVER_PORT")
 
