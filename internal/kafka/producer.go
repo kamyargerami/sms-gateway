@@ -22,12 +22,16 @@ func NewProducer(brokers []string) *Producer {
 			Topic:        "sms_express",
 			Balancer:     &kafka.RoundRobin{},
 			BatchTimeout: 10 * time.Millisecond,
+			// kafka-go defaults to RequireNone (fire-and-forget): the API would answer
+			// "queued" and deduct credit for messages the broker never stored.
+			RequiredAcks: kafka.RequireAll,
 		},
 		bulkWriter: &kafka.Writer{
 			Addr:         kafka.TCP(brokers...),
 			Topic:        "sms_bulk",
 			Balancer:     &kafka.RoundRobin{},
 			BatchTimeout: 10 * time.Millisecond,
+			RequiredAcks: kafka.RequireAll,
 		},
 	}
 }

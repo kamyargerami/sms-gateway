@@ -1,6 +1,11 @@
 services:
   mysql:
     image: mysql:8.0
+    command:
+      - "--max_connections=${MYSQL_MAX_CONNECTIONS}"
+      # Pin strict mode explicitly: balances are BIGINT UNSIGNED, and without strict
+      # mode MySQL would silently clamp a negative result to 0 instead of failing.
+      - "--sql-mode=STRICT_ALL_TABLES,ONLY_FULL_GROUP_BY,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION"
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
@@ -10,14 +15,22 @@ services:
       - "${MYSQL_PORT}:3306"
     volumes:
       - ../scripts/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - mysql_data:/var/lib/mysql
     healthcheck:
-      test: [ "CMD", "mysqladmin" ,"ping", "-h", "localhost" ]
+      # Use TCP (127.0.0.1), not the socket: during first-boot init the entrypoint
+      # runs a temporary socket-only server that answers "localhost" pings early.
+      test: [ "CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}" ]
       interval: 10s
       timeout: 5s
       retries: 5
 
   redis:
     image: redis:7-alpine
+    # AOF persistence: Redis holds the live "available balance". Without it, a
+    # Redis restart forgets every in-flight deduction.
+    command: [ "redis-server", "--appendonly", "yes", "--appendfsync", "everysec" ]
+    volumes:
+      - redis_data:/data
     ports:
       - "${REDIS_PORT}:6379"
 
@@ -38,10 +51,15 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:${KAFKA_PORT}
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # Topics are created explicitly by init-kafka with the right partition counts.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
 
   init-kafka:
     image: confluentinc/cp-kafka:7.6.0
@@ -61,6 +79,7 @@ services:
       dockerfile: deployments/Dockerfile
       target: api
     image: sms-api
+    restart: unless-stopped
     ports:
       - "${API_PORT}:8080"
     depends_on:
@@ -75,6 +94,9 @@ services:
       - REDIS_ADDR=redis:6379
       - KAFKA_BROKERS=kafka:29092
       - SERVER_PORT=8080
+      - DB_MAX_OPEN_CONNS=${API_DB_MAX_OPEN_CONNS}
+      - DB_MAX_IDLE_CONNS=${API_DB_MAX_IDLE_CONNS}
+      - DB_CONN_MAX_LIFETIME=${DB_CONN_MAX_LIFETIME}
       - SMS_COST=${SMS_COST}
 
   worker-express:
@@ -83,6 +105,7 @@ services:
       dockerfile: deployments/Dockerfile
       target: worker
     image: sms-worker
+    restart: unless-stopped
     depends_on:
       mysql:
         condition: service_healthy
@@ -95,6 +118,9 @@ services:
       - REDIS_ADDR=redis:6379
       - KAFKA_BROKERS=kafka:29092
       - WORKER_TYPE=express
+      - DB_MAX_OPEN_CONNS=${WORKER_DB_MAX_OPEN_CONNS}
+      - DB_MAX_IDLE_CONNS=${WORKER_DB_MAX_IDLE_CONNS}
+      - DB_CONN_MAX_LIFETIME=${DB_CONN_MAX_LIFETIME}
       - SMS_COST=${SMS_COST}
     deploy:
       replicas: ${WORKER_EXPRESS_REPLICAS}
@@ -105,6 +131,7 @@ services:
       dockerfile: deployments/Dockerfile
       target: worker
     image: sms-worker
+    restart: unless-stopped
     depends_on:
       mysql:
         condition: service_healthy
@@ -117,6 +144,13 @@ services:
       - REDIS_ADDR=redis:6379
       - KAFKA_BROKERS=kafka:29092
       - WORKER_TYPE=bulk
+      - DB_MAX_OPEN_CONNS=${WORKER_DB_MAX_OPEN_CONNS}
+      - DB_MAX_IDLE_CONNS=${WORKER_DB_MAX_IDLE_CONNS}
+      - DB_CONN_MAX_LIFETIME=${DB_CONN_MAX_LIFETIME}
       - SMS_COST=${SMS_COST}
     deploy:
       replicas: ${WORKER_BULK_REPLICAS}
+
+volumes:
+  mysql_data:
+  redis_data:

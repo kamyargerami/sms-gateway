@@ -18,6 +18,10 @@ func NewRedisRepository(addr string) *RedisRepository {
 	return &RedisRepository{client: redisClient}
 }
 
+func balanceKey(userID int) string {
+	return fmt.Sprintf("user_balance:%d", userID)
+}
+
 // luaScript checks balance and decrements if sufficient.
 // Returns 1 if success, 0 if insufficient, -1 if key does not exist.
 const luaScript = `
@@ -33,11 +37,15 @@ else
 end
 `
 
+// Scripts are cached server-side and invoked via EVALSHA instead of sending the
+// full script body on every request.
+var deductScript = redis.NewScript(luaScript)
+
 // DeductBalance atomic deduction using Lua script
 func (repository *RedisRepository) DeductBalance(goContext context.Context, userID int, cost int) (int, error) {
-	key := fmt.Sprintf("user_balance:%d", userID)
+	key := balanceKey(userID)
 
-	result, err := repository.client.Eval(goContext, luaScript, []string{key}, cost).Result()
+	result, err := deductScript.Run(goContext, repository.client, []string{key}, cost).Result()
 	if err != nil {
 		return 0, err
 	}
@@ -50,10 +58,16 @@ func (repository *RedisRepository) DeductBalance(goContext context.Context, user
 	return int(val), nil
 }
 
-// SetBalance initializes the balance in Redis
-func (repository *RedisRepository) SetBalance(goContext context.Context, userID int, balance int) error {
-	key := fmt.Sprintf("user_balance:%d", userID)
-	return repository.client.Set(goContext, key, balance, 0).Err()
+// InitBalance loads the balance into Redis only if the key does not exist yet (SET NX).
+// A plain SET here would let two concurrent cache-miss requests overwrite a
+// deduction that already happened, effectively granting free SMS.
+func (repository *RedisRepository) InitBalance(goContext context.Context, userID int, balance int) error {
+	return repository.client.SetNX(goContext, balanceKey(userID), balance, 0).Err()
+}
+
+// InvalidateBalance removes the cached balance so it is reloaded from MySQL.
+func (repository *RedisRepository) InvalidateBalance(goContext context.Context, userID int) error {
+	return repository.client.Del(goContext, balanceKey(userID)).Err()
 }
 
 // luaAddScript atomically increments if key exists.
@@ -64,10 +78,12 @@ end
 return 0
 `
 
+var addScript = redis.NewScript(luaAddScript)
+
 // AddBalance increments the balance in Redis atomically
 func (repository *RedisRepository) AddBalance(goContext context.Context, userID int, amount int) error {
-	key := fmt.Sprintf("user_balance:%d", userID)
+	key := balanceKey(userID)
 
-	_, err := repository.client.Eval(goContext, luaAddScript, []string{key}, amount).Result()
+	_, err := addScript.Run(goContext, repository.client, []string{key}, amount).Result()
 	return err
 }

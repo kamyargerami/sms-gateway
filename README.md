@@ -16,10 +16,13 @@ Every technical decision in this project was mapped directly to the business req
    We created entirely separate Kafka Topics (`sms_express` and `sms_bulk`). Express messages go to a topic with 5 partitions and 5 dedicated workers, ensuring they bypass the queue of millions of bulk marketing messages.
 
 4. **"Balance Must Never Drop Below Zero":** 
-   We used a custom **Redis Lua Script** in the API layer to guarantee that checking the balance and deducting it happens as a single, atomic, thread-safe operation. The final source-of-truth update in MySQL is wrapped in strict InnoDB Transactions (`tx.Begin()`).
+   We used a custom **Redis Lua Script** in the API layer to guarantee that checking the balance and deducting it happens as a single, atomic, thread-safe operation (cache misses are initialized with `SET NX`, so concurrent requests can't overwrite each other's deductions). Redis is only a fast pre-check: the source of truth is MySQL, where the worker debits with a guarded `UPDATE ... WHERE balance >= cost` inside an InnoDB transaction (plus a `BIGINT UNSIGNED` balance column, so MySQL itself rejects any negative value). If Redis is ever stale (restart, eviction, failed sync), the worker rejects the SMS as `FAILED` instead of sending it for free.
 
 5. **"Clients Must Use All Their Balance / No Free SMS":**
-   If the mock telecom operator fails, the worker executes a transactional **Refund** across both MySQL and Redis. This ensures no money is lost, but no free SMS is ever sent.
+   If the mock telecom operator fails, the worker marks the SMS `FAILED` and refunds it in **one transaction**, guarded by a `PENDING -> FAILED` transition, so a crash can't lose a refund and a redelivery can't refund twice. If publishing to Kafka fails, the API gives the reserved credit back to Redis immediately.
+
+6. **At-least-once processing without losing messages:**
+   Transient DB errors in the worker are retried in place with backoff. A message is never skipped: in kafka-go, committing a later offset implicitly commits every earlier one, so skipping would silently drop the SMS (and the user's credit). On shutdown, an unfinished message is left uncommitted so it's redelivered.
 
 ---
 
@@ -92,7 +95,7 @@ Once you see that Kafka has created the `sms_express` and `sms_bulk` topics, and
 
 ### 1. Top Up Balance
 ```bash
-curl -X POST http://localhost:8080/api/v1/topup \
+curl -X POST http://localhost:8080/api/v1/users/charge \
   -H "Content-Type: application/json" \
   -d '{"user_id": 1, "amount": 1000}'
 ```
@@ -111,7 +114,7 @@ curl -X POST http://localhost:8080/api/v1/sms/send \
 
 ### 3. Get User SMS Reports
 ```bash
-curl http://localhost:8080/api/v1/reports/1
+curl http://localhost:8080/api/v1/users/1/report
 ```
 
 ## 🧪 Automated Testing
@@ -122,7 +125,7 @@ To run all test suites across the project inside an isolated Docker container:
 ```bash
 make test
 ```
-This will automatically execute `go test -v ./...` in a temporary `golang:1.24` container and ensure that the HTTP Handlers, Mock Operators, and Core logic return the expected results without modifying your host system.
+This will automatically execute `go test -v ./...` in a temporary `golang:1.26-alpine` container and ensure that the HTTP Handlers, Mock Operators, and Core logic return the expected results without modifying your host system.
 
 ## 🚀 Load Testing (Benchmarking)
 

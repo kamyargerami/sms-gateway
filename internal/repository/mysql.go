@@ -3,9 +3,11 @@ package repository
 import (
 	"context"
 	"database/sql"
-	"fmt"
+	"errors"
 	"log"
+	"sms/internal/config"
 	"sms/internal/domain"
+	"time"
 
 	"github.com/go-sql-driver/mysql"
 )
@@ -56,6 +58,14 @@ func (manager *MySQLTransactionManager) WithTransaction(goContext context.Contex
 
 	transactionCtx := InjectTransaction(goContext, sqlTransaction)
 
+	defer func() {
+		// Guarantees the transaction is released even if fn panics.
+		if p := recover(); p != nil {
+			_ = sqlTransaction.Rollback()
+			panic(p)
+		}
+	}()
+
 	if err := fn(transactionCtx); err != nil {
 		if rbErr := sqlTransaction.Rollback(); rbErr != nil {
 			log.Printf("Failed to rollback transaction: %v\n", rbErr)
@@ -79,18 +89,51 @@ func (repository *MySQLUserRepository) GetBalance(goContext context.Context, use
 	var balance int
 	err := queryer.QueryRowContext(goContext, "SELECT balance FROM users WHERE id = ?", userID).Scan(&balance)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return 0, fmt.Errorf("user not found")
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, domain.ErrUserNotFound
 		}
 		return 0, err
 	}
 	return balance, nil
 }
 
-func (repository *MySQLUserRepository) UpdateBalance(goContext context.Context, userID int, amount int) error {
+func (repository *MySQLUserRepository) AddBalance(goContext context.Context, userID int, amount int) error {
 	queryer := getQueryer(goContext, repository.db)
-	_, err := queryer.ExecContext(goContext, "UPDATE users SET balance = balance + ? WHERE id = ?", amount, userID)
-	return err
+	result, err := queryer.ExecContext(goContext, "UPDATE users SET balance = balance + ? WHERE id = ?", amount, userID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return domain.ErrUserNotFound
+	}
+	return nil
+}
+
+// DeductBalance is the source-of-truth guard: the WHERE clause makes the
+// check-and-decrement atomic inside InnoDB, so the balance can never go below zero
+// even if the Redis cache is stale (e.g. after a Redis restart/eviction).
+func (repository *MySQLUserRepository) DeductBalance(goContext context.Context, userID int, amount int) error {
+	queryer := getQueryer(goContext, repository.db)
+	result, err := queryer.ExecContext(goContext,
+		"UPDATE users SET balance = balance - ? WHERE id = ? AND balance >= ?", amount, userID, amount)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		if _, err := repository.GetBalance(goContext, userID); err != nil {
+			return err // ErrUserNotFound or a DB error
+		}
+		return domain.ErrInsufficientBalance
+	}
+	return nil
 }
 
 // SMS Repository
@@ -109,7 +152,8 @@ func (repository *MySQLSMSRepository) Create(goContext context.Context, sms *dom
 		sms.ID, sms.UserID, sms.ToNumber, sms.Text, sms.Status, sms.IsExpress,
 	)
 	if err != nil {
-		if mysqlErr, ok := err.(*mysql.MySQLError); ok && mysqlErr.Number == 1062 {
+		var mysqlErr *mysql.MySQLError
+		if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
 			return domain.ErrDuplicateRecord
 		}
 		return err
@@ -117,10 +161,21 @@ func (repository *MySQLSMSRepository) Create(goContext context.Context, sms *dom
 	return nil
 }
 
-func (repository *MySQLSMSRepository) UpdateStatus(goContext context.Context, id string, status string) error {
+func (repository *MySQLSMSRepository) UpdateStatusFrom(goContext context.Context, id string, from string, to string) error {
 	queryer := getQueryer(goContext, repository.db)
-	_, err := queryer.ExecContext(goContext, "UPDATE sms_records SET status = ? WHERE id = ?", status, id)
-	return err
+	result, err := queryer.ExecContext(goContext,
+		"UPDATE sms_records SET status = ? WHERE id = ? AND status = ?", to, id, from)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return domain.ErrStatusNotChanged
+	}
+	return nil
 }
 
 func (repository *MySQLSMSRepository) GetByID(goContext context.Context, id string) (*domain.SMS, error) {
@@ -129,8 +184,8 @@ func (repository *MySQLSMSRepository) GetByID(goContext context.Context, id stri
 	err := queryer.QueryRowContext(goContext, "SELECT id, user_id, to_number, text, status, is_express, created_at, updated_at FROM sms_records WHERE id = ?", id).
 		Scan(&smsRecord.ID, &smsRecord.UserID, &smsRecord.ToNumber, &smsRecord.Text, &smsRecord.Status, &smsRecord.IsExpress, &smsRecord.CreatedAt, &smsRecord.UpdatedAt)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("sms not found")
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, domain.ErrSMSNotFound
 		}
 		return nil, err
 	}
@@ -147,7 +202,7 @@ func (repository *MySQLSMSRepository) GetByUserID(goContext context.Context, use
 		_ = rows.Close()
 	}()
 
-	var smsList []domain.SMS
+	smsList := make([]domain.SMS, 0)
 	for rows.Next() {
 		var smsRecord domain.SMS
 		if err := rows.Scan(&smsRecord.ID, &smsRecord.UserID, &smsRecord.ToNumber, &smsRecord.Text, &smsRecord.Status, &smsRecord.IsExpress, &smsRecord.CreatedAt, &smsRecord.UpdatedAt); err != nil {
@@ -179,14 +234,27 @@ func (repository *MySQLCreditRepository) Create(goContext context.Context, userI
 }
 
 // ConnectDB helper
-func ConnectDB(dsn string) (*sql.DB, error) {
+func ConnectDB(dsn string, pool config.DBPoolConfig) (*sql.DB, error) {
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil, err
 	}
-	if err := db.Ping(); err != nil {
-		_ = db.Close()
-		return nil, err
+	// Without limits, database/sql opens unbounded connections under load and
+	// quickly exhausts MySQL's max_connections.
+	db.SetMaxOpenConns(pool.MaxOpenConns)
+	db.SetMaxIdleConns(pool.MaxIdleConns)
+	db.SetConnMaxLifetime(pool.ConnMaxLifetime)
+
+	// MySQL's healthcheck can pass while the entrypoint is still running its
+	// temporary init server, so retry for a while instead of crashing on boot.
+	var pingErr error
+	for attempt := 1; attempt <= 30; attempt++ {
+		if pingErr = db.Ping(); pingErr == nil {
+			return db, nil
+		}
+		log.Printf("MySQL not ready (attempt %d/30): %v", attempt, pingErr)
+		time.Sleep(2 * time.Second)
 	}
-	return db, nil
+	_ = db.Close()
+	return nil, pingErr
 }

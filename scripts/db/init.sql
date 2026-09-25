@@ -1,7 +1,7 @@
 CREATE TABLE users
 (
     id         INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    balance    INT NOT NULL DEFAULT 0,
+    balance    BIGINT UNSIGNED NOT NULL DEFAULT 0,
     created_at TIMESTAMP    DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -23,7 +23,7 @@ CREATE TABLE credits
 (
     id         VARCHAR(36) DEFAULT (UUID()) PRIMARY KEY,
     user_id    INT UNSIGNED NOT NULL,
-    amount     INT         NOT NULL,
+    amount     BIGINT UNSIGNED NOT NULL,
     type       VARCHAR(20) NOT NULL, -- 'TOPUP' or 'SMS_SENT' or 'REFUND'
     created_at TIMESTAMP   DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users (id),

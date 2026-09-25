@@ -1,4 +1,4 @@
-.PHONY: test build up down logs worker-logs clean restart
+.PHONY: all test build up down logs worker-logs clean restart
 
 # Run automated tests
 test:
@@ -8,8 +8,9 @@ test:
 	/^--- PASS/ {print \"\033[1;32m✔ \" \$$0 \"\033[0m\"} \
 	/^--- FAIL/ {print \"\033[1;31m✖ \" \$$0 \"\033[0m\"} \
 	/^PASS/ {print \"\n\033[1;32m✅ ALL TESTS PASSED SUCCESSFULLY!\033[0m\n\"} \
-	/^FAIL/ {print \"\n\033[1;31m❌ TESTS FAILED!\033[0m\n\"} \
-	!/^=== RUN/ && !/^--- PASS/ && !/^--- FAIL/ && !/^PASS/ && !/^FAIL/ {print}'"
+	/^FAIL/ {print \"\n\033[1;31m❌ TESTS FAILED!\033[0m\n\"; failed=1} \
+	!/^=== RUN/ && !/^--- PASS/ && !/^--- FAIL/ && !/^PASS/ && !/^FAIL/ {print} \
+	END {exit failed}'"
 
 # Default target
 all: build up
@@ -29,21 +30,21 @@ up:
 # Stop the Docker containers
 down:
 	@echo "Stopping services..."
-	@docker-compose -f deployments/docker-compose.yml down
+	@docker-compose --env-file deployments/.env -f deployments/docker-compose.yml down
 	@echo "Services stopped."
 
 # View logs from all containers
 logs:
-	@docker-compose -f deployments/docker-compose.yml logs -f
+	@docker-compose --env-file deployments/.env -f deployments/docker-compose.yml logs -f
 
 # View logs from only the SMS workers
 worker-logs:
-	@docker-compose -f deployments/docker-compose.yml logs worker-express worker-bulk -f
+	@docker-compose --env-file deployments/.env -f deployments/docker-compose.yml logs worker-express worker-bulk -f
 
 # Completely reset the environment (deletes database, redis, kafka data)
 clean:
 	@echo "Wiping all data and stopping services..."
-	@docker-compose -f deployments/docker-compose.yml down -v
+	@docker-compose --env-file deployments/.env -f deployments/docker-compose.yml down -v
 	@rm -rf bin
 	@echo "Environment is completely clean."
 

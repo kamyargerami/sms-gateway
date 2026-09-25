@@ -8,6 +8,7 @@ import (
 	"sync"
 	"syscall"
 
+	"sms/internal/config"
 	"sms/internal/kafka"
 	"sms/internal/operator"
 	"sms/internal/repository"
@@ -16,9 +17,9 @@ import (
 func main() {
 	dbDsn := os.Getenv("DB_DSN")
 	redisAddr := os.Getenv("REDIS_ADDR")
-	kafkaBrokers := []string{os.Getenv("KAFKA_BROKERS")}
+	kafkaBrokers := config.GetKafkaBrokers()
 
-	db, err := repository.ConnectDB(dbDsn)
+	db, err := repository.ConnectDB(dbDsn, config.GetDBPoolConfig())
 	if err != nil {
 		log.Fatalf("Failed to connect to MySQL: %v", err)
 	}
@@ -32,6 +33,9 @@ func main() {
 	operatorService := operator.NewMock()
 
 	workerType := os.Getenv("WORKER_TYPE")
+	if workerType != "" && workerType != "express" && workerType != "bulk" {
+		log.Fatalf("Invalid WORKER_TYPE %q (expected express, bulk or empty)", workerType)
+	}
 
 	goContext, cancel := context.WithCancel(context.Background())
 	var waitGroup sync.WaitGroup
@@ -70,6 +74,10 @@ func main() {
 
 	log.Println("Shutting down workers...")
 	cancel()
+	// Wait for in-flight messages to finish (and commit) BEFORE closing the readers;
+	// closing first makes the final CommitMessages calls fail.
+	waitGroup.Wait()
+
 	if expressConsumer != nil {
 		if err := expressConsumer.Close(); err != nil {
 			log.Printf("Error closing express consumer: %v\n", err)
@@ -80,7 +88,7 @@ func main() {
 			log.Printf("Error closing bulk consumer: %v\n", err)
 		}
 	}
+	_ = db.Close()
 
-	waitGroup.Wait()
 	log.Println("Workers stopped gracefully")
 }
