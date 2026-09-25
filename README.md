@@ -111,3 +111,15 @@ curl -X POST http://localhost:8080/api/v1/sms/send \
 ```bash
 curl http://localhost:8080/api/v1/reports/1
 ```
+
+## 🚀 Load Testing (Benchmarking)
+
+To verify the **70,000+ RPS** capability of this asynchronous architecture, you can use the [hey](https://github.com/rakyll/hey) load-testing tool.
+
+Run the following command to send a massive spike of requests (e.g., 400 total requests, 20 concurrent workers) to the SMS endpoint:
+
+```bash
+hey -n 400 -c 20 -m POST -T "application/json" \
+  -d '{"user_id": 1, "to_number": "09123456789", "text": "Load Test", "is_express": true}' \
+  http://localhost:8080/api/v1/sms/send
+```
