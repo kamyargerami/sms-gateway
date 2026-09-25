@@ -2,39 +2,49 @@
 
 A blazing-fast, asynchronous SMS Gateway built with **Go (Golang)**, **Kafka**, **Redis**, and **MySQL**. It utilizes **Clean Architecture** principles and advanced concurrency patterns to handle over **70,000 requests per second** (RPS).
 
+## 🎯 How We Met the Challenge Requirements (The "Why")
+
+Every technical decision in this project was mapped directly to the business requirements:
+
+1. **"100 Million SMS per Day" (Scale):** 
+   We decoupled the system. The API doesn't talk to the external telecom. It simply drops the message into **Kafka** and updates **Redis** in `<1ms`. Kafka seamlessly buffers extreme traffic spikes (handling 70k+ RPS during our benchmarks).
+
+2. **"Unequal Distribution of Traffic among Clients":** 
+   If a single massive client fires 50,000 SMS at once, traditional hashing by `user_id` would route all of them to a single Kafka partition, bottlenecking one worker while others idle. We explicitly used Kafka's **`RoundRobin` Balancer** to evenly spray messages across all partitions regardless of the sender.
+
+3. **"Express vs. Bulk SMS (Guaranteed Delivery Time)":** 
+   We created entirely separate Kafka Topics (`sms_express` and `sms_bulk`). Express messages go to a topic with 5 partitions and 5 dedicated workers, ensuring they bypass the queue of millions of bulk marketing messages.
+
+4. **"Balance Must Never Drop Below Zero":** 
+   We used a custom **Redis Lua Script** in the API layer to guarantee that checking the balance and deducting it happens as a single, atomic, thread-safe operation. The final source-of-truth update in MySQL is wrapped in strict InnoDB Transactions (`tx.Begin()`).
+
+5. **"Clients Must Use All Their Balance / No Free SMS":**
+   If the mock telecom operator fails, the worker executes a transactional **Refund** across both MySQL and Redis. This ensures no money is lost, but no free SMS is ever sent.
+
+---
+
 ## 🧠 Architectural Overview & Technical Deep Dive
 
-This application is designed as an **Asynchronous, Event-Driven Microservice**. The goal is to completely decouple the fast incoming web traffic from the slow external SMS operators, guaranteeing that the API never blocks.
+This application strictly follows **Clean Architecture** (Hexagonal Architecture). 
+- **Domain Layer:** Contains pure business models and `Interfaces` (`DatabaseRepository`, `MessageProducer`, etc.).
+- **Delivery Layer (`http.go`):** Relies purely on Interfaces. It has zero direct dependency on MySQL or Kafka.
+- **Repository/Kafka Layers:** Implement the Domain Interfaces.
+- **cmd Layer:** Handles Dependency Injection, wiring the concrete databases to the HTTP and Worker handlers.
 
-### 1. How the Flow Works (The Journey of an SMS)
-- **API (Producer):** When a user sends an SMS, the API receives the JSON, validates it, and immediately checks the user's balance in **Redis (Cache)**. If sufficient, the balance is deducted in memory. The API then packages the message, assigns it a UUID, and fires it into a **Kafka Topic** (`sms_express` or `sms_bulk`). It returns a `200 OK` to the user in less than a millisecond.
-- **Kafka (The Buffer):** Kafka acts as an indestructible shock-absorber. Even if 1 million messages arrive in 10 seconds, Kafka safely stores them on disk across its partitions.
-- **Workers (Consumers):** Background Go processes constantly pull messages from Kafka. They save the pending record into **MySQL**, call the external SMS Operator's API, and update the status to `DELIVERED`. If the operator fails, the worker gracefully refunds the user in both MySQL and Redis.
+### Safeguards & Engineering Marvels
 
-### 2. Safeguards & Engineering Marvels
-We implemented several high-end architectural safeguards to make this system enterprise-ready:
+#### A. Eradicating InnoDB Deadlocks (Error 1213)
+When multiple workers process messages for the *same* user concurrently, MySQL's InnoDB engine throws Deadlocks because Foreign Keys acquire Shared (S) locks, and subsequent UPDATEs try to escalate them to Exclusive (X) locks simultaneously.
+- **The Fix:** We structured our SQL queries to execute `UPDATE users SET balance...` **first**, forcing the worker to acquire the Exclusive lock immediately. This gracefully queues other concurrent workers and completely eliminates deadlocks.
 
-#### A. 100% Atomic Operations (No Race Conditions)
-In high concurrency, if two API requests try to deduct a user's balance at the exact same microsecond, a "Race Condition" occurs, allowing users to spend money they don't have.
-- **Redis Lua Scripts:** We use a custom Lua script for both balance deduction and refunds. Redis is single-threaded, so the Lua script guarantees that checking the balance and deducting it happens as a single, indivisible (atomic) operation.
-- **MySQL Transactions:** In the Worker, inserting the SMS and updating the permanent balance in the `users` table are wrapped in a single SQL Transaction (`tx.Begin()`). If anything fails, it fully rolls back.
+#### B. The Kafka Parallelism Model
+To scale this system to handle slow telecom operators, we strictly follow the **Kafka Parallelism Model**: 1 Goroutine per Partition. We do not use internal Worker Pools (Goroutine pools inside a consumer) because committing offsets concurrently leads to data loss upon crashes. We simply scale horizontally by adding more Kafka Partitions and Worker Replicas.
 
-#### B. Eradicating InnoDB Deadlocks (Error 1213)
-When multiple workers process messages for the *same* user concurrently, MySQL's InnoDB engine can throw Deadlocks. This happens because Foreign Keys acquire Shared (S) locks, and subsequent UPDATEs try to escalate them to Exclusive (X) locks simultaneously.
-- **The Fix:** We structured our SQL queries to execute `UPDATE users SET balance...` **first**, before inserting into `sms_records` or `transactions`. This forces the worker to acquire the Exclusive lock immediately, gracefully queuing other workers and completely eliminating deadlocks.
+#### C. O(1) Database Lookups (Composite Indexes)
+To ensure the `GetReports` API remains blazing fast even when a user has millions of SMS records, we added a **Composite Index** on `(user_id, created_at DESC)`. This allows MySQL to fetch the latest 100 messages instantly without performing expensive memory sorts (Filesorts).
 
-#### C. Kafka Batching & RoundRobin Fairness
-- **Producer Batching:** The API uses a 10ms batch timeout. Under heavy load, it groups thousands of SMS messages into a single TCP packet before sending them to Kafka, dropping network overhead to near zero.
-- **Fair Distribution:** We use a `RoundRobin` balancer. When a massive burst of traffic hits, messages are distributed perfectly equally across all 5 partitions of the `sms_express` topic, ensuring all 5 Express Workers share the exact same amount of load.
-
-#### D. The Kafka Parallelism Model (Why no internal Worker Pool?)
-To solve the issue of slow external operators (e.g., if an operator takes 5 seconds to reply), one might be tempted to spawn thousands of Goroutines inside a single Worker (a Worker Pool). 
-However, this is an **anti-pattern** in Kafka because committing offsets concurrently leads to data loss if the server crashes (committing offset 100 implies 1-99 are also done). 
-Instead, we strictly follow the **Kafka Parallelism Model**: 1 Goroutine per Partition. To scale this system to handle slower operators, we simply increase the Kafka partitions to 100 and spawn 100 lightweight Worker replicas. This guarantees zero data loss and flawless horizontal scaling.
-
-#### E. Mock External Operator (Telecom Simulator)
-To test the resilience of our asynchronous architecture, the `internal/operator` package acts as a simulated 3rd-party telecom provider. 
-Instead of sending real SMS, it simulates the unpredictable latency of an external HTTP request. It randomly sleeps for a few milliseconds (or seconds) to simulate network delay, and randomly fails (e.g., 5% failure rate) to test the Worker's automatic Refund and Rollback mechanisms in real-time.
+#### D. Mock External Operator (Telecom Simulator)
+The `internal/operator` package simulates a 3rd-party telecom provider. It introduces random latency (10-100ms) and random failure rates to test the Worker's automatic Refund and Idempotency mechanisms in real-time.
 
 ---
 
@@ -43,7 +53,6 @@ Instead of sending real SMS, it simulates the unpredictable latency of an extern
 This project includes a `Makefile` that automates building the Docker images and running the stack.
 
 ### 1. Configure Environment Variables
-The environment configuration files are located in the `deployments/` folder.
 First, make a copy of the example config:
 ```bash
 cp deployments/.env.example deployments/.env
@@ -67,8 +76,6 @@ Once you see that Kafka has created the `sms_express` and `sms_bulk` topics, and
 ---
 
 ## 🛠️ Makefile Commands Reference
-
-Here are all the available commands to manage the application:
 
 - **`make build`**: Builds the Docker images via docker-compose.
 - **`make up`**: Starts the Docker Compose stack in the background.
