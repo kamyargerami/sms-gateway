@@ -71,10 +71,14 @@ func main() {
 	log.Println("Shutting down workers...")
 	cancel()
 	if expressConsumer != nil {
-		expressConsumer.Close()
+		if err := expressConsumer.Close(); err != nil {
+			log.Printf("Error closing express consumer: %v\n", err)
+		}
 	}
 	if bulkConsumer != nil {
-		bulkConsumer.Close()
+		if err := bulkConsumer.Close(); err != nil {
+			log.Printf("Error closing bulk consumer: %v\n", err)
+		}
 	}
 
 	wg.Wait()

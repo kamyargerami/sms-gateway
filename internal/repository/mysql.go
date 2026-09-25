@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"sms/internal/domain"
 
 	"github.com/go-sql-driver/mysql"
@@ -56,7 +57,9 @@ func (m *MySQLTransactionManager) WithTransaction(ctx context.Context, fn func(c
 	transactionCtx := InjectTransaction(ctx, sqlTransaction)
 
 	if err := fn(transactionCtx); err != nil {
-		sqlTransaction.Rollback()
+		if rbErr := sqlTransaction.Rollback(); rbErr != nil {
+			log.Printf("Failed to rollback transaction: %v\n", rbErr)
+		}
 		return err
 	}
 	return sqlTransaction.Commit()
@@ -126,7 +129,9 @@ func (r *MySQLSMSRepository) GetByUserID(ctx context.Context, userID int) ([]dom
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() {
+		_ = rows.Close()
+	}()
 
 	var smsList []domain.SMS
 	for rows.Next() {
@@ -136,6 +141,11 @@ func (r *MySQLSMSRepository) GetByUserID(ctx context.Context, userID int) ([]dom
 		}
 		smsList = append(smsList, s)
 	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
 	return smsList, nil
 }
 
@@ -161,6 +171,7 @@ func ConnectDB(dsn string) (*sql.DB, error) {
 		return nil, err
 	}
 	if err := db.Ping(); err != nil {
+		_ = db.Close()
 		return nil, err
 	}
 	return db, nil
