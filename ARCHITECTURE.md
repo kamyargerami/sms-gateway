@@ -289,8 +289,10 @@ math (Little's Law): `workers needed = target throughput (msg/s) × average
 time to process one message (s)`. The per-message time here is dominated by
 two blocking calls the worker makes in sequence: the mock operator
 (`internal/operator/mock.go` sleeps 10-100ms, uniform, so ~55ms average) plus
-one MySQL transaction (debit + insert + credit, roughly ~10ms against a local
-container) — call it **~65ms/message, ~15 msg/s per worker**.
+one MySQL transaction (debit + insert + credit). The original estimate was
+~65ms/message (~15 msg/s per worker); the load tests below **measured
+~88ms/message, ~11.3 msg/s per worker** with the whole stack on one machine,
+and that measured figure is what the sizing uses.
 
 Target derivation, with the assumptions spelled out so they're easy to
 recompute if the real traffic shape differs:
@@ -300,7 +302,20 @@ recompute if the real traffic shape differs:
 | 100,000,000 / 86,400s | ~1,157 msg/s average |
 | × 1.5 peak-over-average margin (traffic isn't perfectly uniform across the day) | ~1,736 msg/s peak target |
 | × 70% express / 30% bulk split (measured/assumed traffic shape) | ~1,215 msg/s express, ~521 msg/s bulk |
-| ÷ ~15 msg/s per worker | **82 express workers, 35 bulk workers** (117 total) |
+| ÷ ~11.3 msg/s per worker (measured) | **108 express workers, 47 bulk workers** (155 total) |
+
+### Measured throughput (load tests)
+
+Run with `scripts/loadtest` (see README) against the full compose stack on a
+single laptop (API, 117 workers, MySQL, Redis and Kafka sharing one host; the
+load generator runs on the same host too, so the API numbers are a lower bound).
+The mock operator fails 10% of sends, which shows up as ~10% `FAILED`.
+
+| Scenario | API accept rate | Sent to operator | Per worker |
+|---|---|---|---|
+| 1 user, 100k express (`hey -c 1000`) | — | **~76 msg/s** (85% of the SMS expired) | ~1 msg/s |
+| 1,000 users, 100k bulk (`-c 500`) | ~38,300 req/s (p99 29ms) | ~395 msg/s (35 bulk workers) | ~11.3 msg/s |
+| 1,000 + 1,000 users, 70k express + 30k bulk in parallel | ~29,800 req/s combined (p99 ~46ms) | **~921 express + ~400 bulk = ~1,321 msg/s** | ~11.2 / ~11.4 msg/s |
 
 ## 8. Data model
 
@@ -383,7 +398,7 @@ becomes the bottleneck. In a real deployment, five things cap volume that
   (the same round-robin idea already used for uneven client traffic), or
   contracting with more than one operator.
 - **A single Kafka broker's disk and network ceiling.** The compose stack
-  runs one broker; 117 partitions on one broker is fine partition-count-wise,
+  runs one broker; 155 partitions on one broker is fine partition-count-wise,
   but one broker's disk I/O and NIC still cap aggregate throughput.
   Real scale needs a multi-broker cluster (see the replication-factor note
   above) so partitions — and their I/O load — spread across machines.
