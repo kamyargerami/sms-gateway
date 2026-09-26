@@ -253,7 +253,7 @@ escalation, which removes the deadlock without weakening consistency.
   is the shock absorber between the bursty API traffic and the
   rate-limited-by-nature worker/telecom side.
 - Partitioning uses `kafka.RoundRobin`, **not** a hash of `user_id`. If
-  partitioning were keyed by client, one client sending 50,000 SMS in a burst
+  partitioning were keyed by client, one client sending 30,000 SMS in a burst
   would pin all of them to a single partition/consumer, while eight other
   workers sat idle — exactly the "unequal distribution" problem called out in
   the spec. Round-robin spreads every client's messages across all partitions,
