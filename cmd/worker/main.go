@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	_ "time/tzdata"
 
 	"sms/internal/config"
 	"sms/internal/kafka"

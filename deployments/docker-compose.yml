@@ -11,6 +11,7 @@ services:
       MYSQL_DATABASE: ${MYSQL_DATABASE}
       MYSQL_USER: ${MYSQL_USER}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      TZ: ${TZ}
     ports:
       - "${MYSQL_PORT}:3306"
     volumes:
@@ -90,7 +91,7 @@ services:
       redis:
         condition: service_started
     environment:
-      - DATABASE_DSN=${MYSQL_USER}:${MYSQL_PASSWORD}@tcp(mysql:3306)/${MYSQL_DATABASE}?parseTime=true
+      - DATABASE_DSN=${MYSQL_USER}:${MYSQL_PASSWORD}@tcp(mysql:3306)/${MYSQL_DATABASE}?parseTime=true&loc=Local
       - REDIS_ADDRESS=redis:6379
       - KAFKA_BROKERS=kafka:29092
       - SERVER_PORT=8080
@@ -98,6 +99,7 @@ services:
       - DATABASE_MAX_IDLE_CONNECTIONS=${API_DATABASE_MAX_IDLE_CONNECTIONS}
       - DATABASE_CONNECTION_MAX_LIFETIME=${DATABASE_CONNECTION_MAX_LIFETIME}
       - SMS_COST=${SMS_COST}
+      - TZ=${TZ}
       - EXPRESS_SMS_TTL=${EXPRESS_SMS_TTL}
 
   worker-express:
@@ -115,7 +117,7 @@ services:
       redis:
         condition: service_started
     environment:
-      - DATABASE_DSN=${MYSQL_USER}:${MYSQL_PASSWORD}@tcp(mysql:3306)/${MYSQL_DATABASE}?parseTime=true
+      - DATABASE_DSN=${MYSQL_USER}:${MYSQL_PASSWORD}@tcp(mysql:3306)/${MYSQL_DATABASE}?parseTime=true&loc=Local
       - REDIS_ADDRESS=redis:6379
       - KAFKA_BROKERS=kafka:29092
       - WORKER_TYPE=express
@@ -123,6 +125,7 @@ services:
       - DATABASE_MAX_IDLE_CONNECTIONS=${WORKER_DATABASE_MAX_IDLE_CONNECTIONS}
       - DATABASE_CONNECTION_MAX_LIFETIME=${DATABASE_CONNECTION_MAX_LIFETIME}
       - SMS_COST=${SMS_COST}
+      - TZ=${TZ}
     deploy:
       replicas: ${WORKER_EXPRESS_REPLICAS}
 
@@ -141,7 +144,7 @@ services:
       redis:
         condition: service_started
     environment:
-      - DATABASE_DSN=${MYSQL_USER}:${MYSQL_PASSWORD}@tcp(mysql:3306)/${MYSQL_DATABASE}?parseTime=true
+      - DATABASE_DSN=${MYSQL_USER}:${MYSQL_PASSWORD}@tcp(mysql:3306)/${MYSQL_DATABASE}?parseTime=true&loc=Local
       - REDIS_ADDRESS=redis:6379
       - KAFKA_BROKERS=kafka:29092
       - WORKER_TYPE=bulk
@@ -149,6 +152,7 @@ services:
       - DATABASE_MAX_IDLE_CONNECTIONS=${WORKER_DATABASE_MAX_IDLE_CONNECTIONS}
       - DATABASE_CONNECTION_MAX_LIFETIME=${DATABASE_CONNECTION_MAX_LIFETIME}
       - SMS_COST=${SMS_COST}
+      - TZ=${TZ}
     deploy:
       replicas: ${WORKER_BULK_REPLICAS}
 
