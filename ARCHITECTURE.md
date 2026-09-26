@@ -365,3 +365,38 @@ git-ignored since it holds credentials).
   factor ≥ 3 for durability, and remove `KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`'s
   single point of setup (`init-kafka`) in favor of Terraform/GitOps-managed
   topics.
+
+## 11. Beyond this project: what actually caps daily SMS volume
+
+Section 7 sizes the *worker fleet* for ≥100M messages/day, but adding
+workers only helps up to the point where something outside this codebase
+becomes the bottleneck. In a real deployment, five things cap volume that
+`WORKER_EXPRESS_REPLICAS`/`WORKER_BULK_REPLICAS` cannot fix:
+
+- **The telecom operator's own throughput limit.** `internal/operator/mock.go`
+  simulates latency with no rate limit of its own, but a real SMS
+  operator/SMPP gateway enforces a hard cap per account or per SMPP bind
+  (messages/second). Past that cap, adding workers just grows the Kafka
+  queue instead of raising real throughput — the fix is provisioning
+  multiple operator accounts/binds and fanning traffic out across them
+  (the same round-robin idea already used for uneven client traffic), or
+  contracting with more than one operator.
+- **A single Kafka broker's disk and network ceiling.** The compose stack
+  runs one broker; 117 partitions on one broker is fine partition-count-wise,
+  but one broker's disk I/O and NIC still cap aggregate throughput.
+  Real scale needs a multi-broker cluster (see the replication-factor note
+  above) so partitions — and their I/O load — spread across machines.
+- **A single MySQL instance's write throughput.** MySQL is the durability
+  source of truth (Section 4), and one instance has a fixed writes/sec
+  ceiling regardless of worker count. Read-heavy paths like `GetReports`
+  can go to a read replica, but the debit+insert path is a write and can
+  only be scaled by sharding (e.g., by `user_id`) once a single primary's
+  write capacity is saturated.
+- **A single Docker host's CPU/RAM.** `--scale` (Section 7) still schedules
+  every replica on one machine. Hundreds of real workers need scheduling
+  across multiple hosts — a real orchestrator (Kubernetes with an HPA keyed
+  on Kafka consumer lag, or Swarm across a multi-node cluster) rather than
+  `docker-compose --scale` on a single box.
+- **Commercial/contractual limits.** Independent of all the above, most
+  operators enforce a contractual daily cap and require sufficient prepaid
+  credit/balance — a limit no amount of infrastructure scaling changes.
