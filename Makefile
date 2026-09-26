@@ -24,7 +24,10 @@ build:
 # Start the Docker containers
 up:
 	@echo "Starting services..."
-	@docker-compose --env-file deployments/.env -f deployments/docker-compose.yml up -d
+	@set -a && . ./deployments/.env && set +a && \
+	docker-compose --env-file deployments/.env -f deployments/docker-compose.yml up -d \
+		--scale worker-express=$$WORKER_EXPRESS_REPLICAS \
+		--scale worker-bulk=$$WORKER_BULK_REPLICAS
 	@echo "Services are running."
 
 # Stop the Docker containers

@@ -281,6 +281,27 @@ escalation, which removes the deadlock without weakening consistency.
   `GetReports` stays O(log n) instead of a filesort even once a user has
   millions of rows.
 
+### Sizing the worker fleet for >=100M messages/day
+
+Because the scaling model is one goroutine per Kafka partition with no
+internal goroutine pool (see above), throughput is governed by simple queueing
+math (Little's Law): `workers needed = target throughput (msg/s) × average
+time to process one message (s)`. The per-message time here is dominated by
+two blocking calls the worker makes in sequence: the mock operator
+(`internal/operator/mock.go` sleeps 10-100ms, uniform, so ~55ms average) plus
+one MySQL transaction (debit + insert + credit, roughly ~10ms against a local
+container) — call it **~65ms/message, ~15 msg/s per worker**.
+
+Target derivation, with the assumptions spelled out so they're easy to
+recompute if the real traffic shape differs:
+
+| Step | Value |
+|---|---|
+| 100,000,000 / 86,400s | ~1,157 msg/s average |
+| × 1.5 peak-over-average margin (traffic isn't perfectly uniform across the day) | ~1,736 msg/s peak target |
+| × 70% express / 30% bulk split (measured/assumed traffic shape) | ~1,215 msg/s express, ~521 msg/s bulk |
+| ÷ ~15 msg/s per worker | **82 express workers, 35 bulk workers** (117 total) |
+
 ## 8. Data model
 
 ```mermaid
