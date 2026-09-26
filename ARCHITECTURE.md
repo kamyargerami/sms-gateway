@@ -165,7 +165,43 @@ request reloads the true balance. This is what makes "balance can never go
 negative" and "no free SMS" hold even under cache failures, not just under
 the happy path.
 
-## 4. Idempotency and at-least-once delivery
+## 4. Redis: persistence, and what happens if it crashes or loses data
+
+### What's actually configured
+
+`deployments/docker-compose.yml` starts Redis with `--appendonly yes --appendfsync everysec`. That turns on **AOF (Append Only File)** persistence: every write command Redis executes is appended to a log file on the `redis_data` volume, and on restart Redis replays that log to rebuild the dataset. `appendfsync everysec` means the OS buffer is flushed to physical disk once a second (not on every single write) — so a **crash** (not a clean shutdown) can lose at most the last ~1 second of writes; a clean restart loses nothing, since Redis flushes before exiting.
+
+The compose file never passes `--save ""`, so Redis's **built-in default RDB snapshot schedule is also still active** underneath the explicit AOF setting (e.g. snapshot if 10000+ keys changed in 60s, 100+ in 300s, or 1+ in 3600s). In practice this stack is running the hybrid RDB+AOF setup, not AOF alone, even though only AOF is mentioned explicitly.
+
+### What persistence does *not* cover
+
+AOF/RDB only reduce data loss in the *ordinary* crash/restart case. They do nothing for a genuine full wipe — the `redis_data` volume being deleted, a manual `FLUSHALL`, or the AOF file itself getting corrupted — because in that case there's no log left to replay. That's the scenario worth designing for on its own merits, and the application doesn't rely on Redis persistence to stay correct in it.
+
+### How the application handles a Redis crash / full data loss
+
+Redis in this system is a **fast-path cache, never the source of truth** — the balance guarantee comes entirely from MySQL's guarded `UPDATE users SET balance = balance - ? WHERE id = ? AND balance >= ?` (see section 3), which doesn't care whether Redis has any data at all. Concretely, if Redis loses everything (a crash with no AOF to replay, or a full wipe) while, say, 1,000 SMS are already sitting in Kafka:
+
+- **The 1,000 already-queued messages are unaffected.** Redis's state played no further part in them — each is debited by the worker straight against MySQL when it's actually processed, using the guard above. Any that don't fit the real balance are marked `FAILED` with no charge; none can ever be sent for free.
+- **New requests arriving during the outage hit a cache miss.** `internal/delivery/http.go`'s `SendSMS` sees `DeductBalance` return `-1` (key doesn't exist in Redis), reads the real balance from MySQL (`GetBalance`), reseeds Redis with `SETNX` (`InitBalance`), and deducts from that freshly seeded key. Because MySQL hasn't yet processed the 1,000 messages still in Kafka at that moment, the number it reads is temporarily higher than the user's true remaining balance — so a few *new* requests may get accepted ("200 queued") that ultimately can't be paid for.
+- **Those over-accepted requests still can't cause harm.** When each one reaches a worker, it goes through the exact same MySQL guard as every other message. Whichever of them the real balance can't cover come back `FAILED` with a refund of nothing (they were never charged), and the worker calls `InvalidateBalance` for that user so the next request reloads a correct number from MySQL.
+
+```mermaid
+flowchart TD
+    A["Redis crashes / loses all data"] --> B["Next request for user X arrives"]
+    B --> C["Redis DeductBalance -> -1 (cache miss)"]
+    C --> D["API reads real balance from MySQL"]
+    D --> E["API reseeds Redis: SETNX (InitBalance)"]
+    E --> F["API deducts from the freshly seeded key"]
+    F --> G["SMS produced to Kafka"]
+    G --> H["Worker consumes the message"]
+    H --> I{"MySQL guarded UPDATE:<br/>balance >= cost?"}
+    I -->|yes| J["Debit commits, SMS sent"]
+    I -->|no| K["SMS marked FAILED, no charge,<br/>Redis key invalidated"]
+```
+
+Net effect: the two guarantees that matter — **balance never goes negative** and **no SMS is ever sent for free** — hold exactly as well with Redis completely empty as they do with it fully warm, because neither guarantee is implemented in Redis. The only real cost is UX-level and temporary: during the recovery window, some sends that the API accepted with a 200 can end up `FAILED` a little later instead of being rejected with a 402 immediately, and (since partitioning is round-robin, not per-user) which specific messages fail isn't strictly FIFO — though the total count of successes/failures still lines up with the user's real balance. This window closes on its own as soon as the Kafka backlog drains and MySQL catches up.
+
+## 5. Idempotency and at-least-once delivery
 
 Kafka consumers in this system are **at-least-once**: a crash between
 "process message" and "commit offset" causes the same message to be
@@ -190,7 +226,7 @@ assuming it won't happen:
   shutdown, the offset is deliberately left uncommitted so the next consumer
   instance picks the message back up.
 
-## 5. Avoiding InnoDB deadlocks under concurrent workers
+## 6. Avoiding InnoDB deadlocks under concurrent workers
 
 The worker's "debit + insert SMS + insert credit" unit of work (see section 3)
 touches the same user row from three statements in one transaction. `sms_records`
@@ -211,7 +247,7 @@ path. Acquiring the Exclusive lock up front means a second worker touching the
 same user simply queues behind the first one instead of racing it for lock
 escalation, which removes the deadlock without weakening consistency.
 
-## 6. Scaling to ~100M messages/day with uneven clients
+## 7. Scaling to ~100M messages/day with uneven clients
 
 - 100M/day ≈ 1,160 msg/sec average, with real spikes far above that — Kafka
   is the shock absorber between the bursty API traffic and the
@@ -245,7 +281,7 @@ escalation, which removes the deadlock without weakening consistency.
   `GetReports` stays O(log n) instead of a filesort even once a user has
   millions of rows.
 
-## 7. Data model
+## 8. Data model
 
 ```mermaid
 erDiagram
@@ -283,7 +319,7 @@ application-level `WHERE balance >= cost` guard. `credits` is an audit trail
 (top-up / charge / refund) rather than something the business logic reads
 back from, which keeps the balance check itself a single indexed column read.
 
-## 8. Deployment topology
+## 9. Deployment topology
 
 `deployments/docker-compose.yml` runs: `mysql`, `redis`, `zookeeper` + `kafka`,
 a one-shot `init-kafka` job that creates `sms_express`/`sms_bulk` with their
@@ -294,7 +330,7 @@ connection-pool sizes, `SMS_COST`) live in `deployments/.env`
 (`deployments/.env.example` is the checked-in template; `.env` itself is
 git-ignored since it holds credentials).
 
-## 9. Known simplifications (in scope for this challenge)
+## 10. Known simplifications (in scope for this challenge)
 
 - The mock operator (`internal/operator/mock.go`) simulates 10–100ms latency
   and a 90% success rate; a real integration would replace `SMSOperator` with
