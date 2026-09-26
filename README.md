@@ -100,3 +100,25 @@ hey -n 400 -c 20 -m POST -T "application/json" \
   -d '{"user_id": 1, "to_number": "09123456789", "text": "Load Test", "is_express": true}' \
   http://localhost:8080/api/v1/sms/send
 ```
+
+### Spreading the load over many users
+`scripts/loadtest` creates users, tops them up through the API, sends SMS
+round-robin across them, waits for the workers and reports both API and
+worker throughput:
+
+```bash
+go run ./scripts/loadtest -express -first-user 3000 -users 1000 -n 70000 -c 350 &
+go run ./scripts/loadtest          -first-user 5000 -users 1000 -n 30000 -c 150 &
+wait
+```
+
+Useful flags: 
+
+`-express` (send express SMS; expired ones don't count as
+throughput)
+
+`-first-user` (first user id that will be created in DB, default 1000)
+
+`-dsn` (MySQL DSN, default matches `.env.example` on `localhost:3306`)
+
+`-api` (default`http://localhost:8080`).
