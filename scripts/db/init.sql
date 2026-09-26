@@ -7,7 +7,7 @@ CREATE TABLE users
 
 CREATE TABLE sms_records
 (
-    id         VARCHAR(36) PRIMARY KEY,
+    id         VARCHAR(36) DEFAULT (UUID()) PRIMARY KEY,
     user_id    INT UNSIGNED NOT NULL,
     to_number  VARCHAR(20) NOT NULL,
     text       TEXT        NOT NULL,
