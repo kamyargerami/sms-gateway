@@ -148,8 +148,8 @@ func NewMySQLSMSRepository(database *sql.DB) *MySQLSMSRepository {
 func (repository *MySQLSMSRepository) Create(goContext context.Context, sms *domain.SMS) error {
 	queryer := getQueryer(goContext, repository.database)
 	_, err := queryer.ExecContext(goContext,
-		"INSERT INTO sms_records (id, user_id, to_number, text, status, is_express) VALUES (?, ?, ?, ?, ?, ?)",
-		sms.ID, sms.UserID, sms.ToNumber, sms.Text, sms.Status, sms.IsExpress,
+		"INSERT INTO sms_records (id, user_id, to_number, text, status, is_express, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		sms.ID, sms.UserID, sms.ToNumber, sms.Text, sms.Status, sms.IsExpress, sms.ExpiresAt,
 	)
 	if err != nil {
 		var mysqlError *mysql.MySQLError
@@ -180,21 +180,20 @@ func (repository *MySQLSMSRepository) UpdateStatusFrom(goContext context.Context
 
 func (repository *MySQLSMSRepository) GetByID(goContext context.Context, id string) (*domain.SMS, error) {
 	queryer := getQueryer(goContext, repository.database)
-	var smsRecord domain.SMS
-	err := queryer.QueryRowContext(goContext, "SELECT id, user_id, to_number, text, status, is_express, created_at, updated_at FROM sms_records WHERE id = ?", id).
-		Scan(&smsRecord.ID, &smsRecord.UserID, &smsRecord.ToNumber, &smsRecord.Text, &smsRecord.Status, &smsRecord.IsExpress, &smsRecord.CreatedAt, &smsRecord.UpdatedAt)
+	row := queryer.QueryRowContext(goContext, "SELECT "+smsColumns+" FROM sms_records WHERE id = ?", id)
+	smsRecord, err := scanSMS(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, domain.ErrSMSNotFound
 		}
 		return nil, err
 	}
-	return &smsRecord, nil
+	return smsRecord, nil
 }
 
 func (repository *MySQLSMSRepository) GetByUserID(goContext context.Context, userID int) ([]domain.SMS, error) {
 	queryer := getQueryer(goContext, repository.database)
-	rows, err := queryer.QueryContext(goContext, "SELECT id, user_id, to_number, text, status, is_express, created_at, updated_at FROM sms_records WHERE user_id = ? ORDER BY created_at DESC LIMIT 100", userID)
+	rows, err := queryer.QueryContext(goContext, "SELECT "+smsColumns+" FROM sms_records WHERE user_id = ? ORDER BY created_at DESC LIMIT 100", userID)
 	if err != nil {
 		return nil, err
 	}
@@ -204,11 +203,11 @@ func (repository *MySQLSMSRepository) GetByUserID(goContext context.Context, use
 
 	smsList := make([]domain.SMS, 0)
 	for rows.Next() {
-		var smsRecord domain.SMS
-		if err := rows.Scan(&smsRecord.ID, &smsRecord.UserID, &smsRecord.ToNumber, &smsRecord.Text, &smsRecord.Status, &smsRecord.IsExpress, &smsRecord.CreatedAt, &smsRecord.UpdatedAt); err != nil {
+		smsRecord, err := scanSMS(rows)
+		if err != nil {
 			return nil, err
 		}
-		smsList = append(smsList, smsRecord)
+		smsList = append(smsList, *smsRecord)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -216,6 +215,25 @@ func (repository *MySQLSMSRepository) GetByUserID(goContext context.Context, use
 	}
 
 	return smsList, nil
+}
+
+const smsColumns = "id, user_id, to_number, text, status, is_express, expires_at, created_at, updated_at"
+
+type rowScanner interface {
+	Scan(destinations ...any) error
+}
+
+func scanSMS(row rowScanner) (*domain.SMS, error) {
+	var smsRecord domain.SMS
+	var expiresAt sql.NullTime
+	if err := row.Scan(&smsRecord.ID, &smsRecord.UserID, &smsRecord.ToNumber, &smsRecord.Text, &smsRecord.Status,
+		&smsRecord.IsExpress, &expiresAt, &smsRecord.CreatedAt, &smsRecord.UpdatedAt); err != nil {
+		return nil, err
+	}
+	if expiresAt.Valid {
+		smsRecord.ExpiresAt = &expiresAt.Time
+	}
+	return &smsRecord, nil
 }
 
 // Transaction Repository

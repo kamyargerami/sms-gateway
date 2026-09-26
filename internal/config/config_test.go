@@ -35,3 +35,16 @@ func TestGetDatabasePoolConfig_IdleCappedAtOpen(testingT *testing.T) {
 		testingT.Fatalf("idle connections should be capped at open connections, got %d", pool.MaxIdleConnections)
 	}
 }
+
+func TestGetExpressSMSTTL(testingT *testing.T) {
+	testingT.Setenv("EXPRESS_SMS_TTL", "90s")
+	if ttl := GetExpressSMSTTL(); ttl != 90*time.Second {
+		testingT.Errorf("expected 90s, got %v", ttl)
+	}
+	for _, value := range []string{"", "garbage", "0", "-1m"} {
+		testingT.Setenv("EXPRESS_SMS_TTL", value)
+		if ttl := GetExpressSMSTTL(); ttl != 2*time.Minute {
+			testingT.Errorf("EXPRESS_SMS_TTL=%q: expected default 2m, got %v", value, ttl)
+		}
+	}
+}

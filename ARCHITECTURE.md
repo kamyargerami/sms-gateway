@@ -319,8 +319,9 @@ erDiagram
         int user_id FK
         varchar to_number
         text text
-        enum status "PENDING / DELIVERED / FAILED"
+        enum status "PENDING / DELIVERED / FAILED / EXPIRED"
         bool is_express
+        timestamp expires_at "delivery deadline, NULL = none"
         timestamp created_at
         timestamp updated_at
     }
@@ -400,3 +401,27 @@ becomes the bottleneck. In a real deployment, five things cap volume that
 - **Commercial/contractual limits.** Independent of all the above, most
   operators enforce a contractual daily cap and require sufficient prepaid
   credit/balance — a limit no amount of infrastructure scaling changes.
+
+## 12. Delivery deadlines
+
+Separate topics keep bulk traffic from delaying express traffic, but on their own
+they don't *guarantee* anything: a slow operator, a lagging consumer or a
+database outage can still hold an OTP in the queue. A per-message deadline makes
+sure such an OTP is dropped instead of being sent (and charged) too late.
+
+### Delivery deadline (`expires_at`)
+
+- The API stamps every **express** SMS with `expires_at = created_at + EXPRESS_SMS_TTL`
+  (default `2m`) and returns it in the response.
+  Bulk SMS have no deadline (`expires_at` is NULL).
+- The worker checks the deadline twice: **on pickup** (before anything is
+  charged) and **right before calling the operator** (the debit transaction may
+  have been retrying against a slow database in between). Once the operator
+  call has started it is not interrupted.
+- An expired SMS is stored as `EXPIRED`, is **never sent, and is not charged**:
+  - expired on pickup: MySQL is never debited; the credit the API reserved in
+    Redis is given back;
+  - expired after the debit, or a redelivery of an SMS a crashed worker already
+    paid for (still `PENDING`): `PENDING -> EXPIRED` + refund run in one
+    transaction, guarded by the status transition exactly like the `FAILED`
+    path, so a redelivery can't refund twice.

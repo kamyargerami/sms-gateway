@@ -141,6 +141,12 @@ func (handler *Handler) SendSMS(ginContext *gin.Context) {
 	}
 
 	now := time.Now()
+	var expiresAt *time.Time
+	if request.IsExpress {
+		// Only express SMS (OTPs) have a deadline; the worker enforces it.
+		deadline := now.Add(config.GetExpressSMSTTL())
+		expiresAt = &deadline
+	}
 	sms := &domain.SMS{
 		ID:        uuid.New().String(),
 		UserID:    request.UserID,
@@ -148,6 +154,7 @@ func (handler *Handler) SendSMS(ginContext *gin.Context) {
 		Text:      request.Text,
 		Status:    domain.StatusPending,
 		IsExpress: request.IsExpress,
+		ExpiresAt: expiresAt,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -166,7 +173,11 @@ func (handler *Handler) SendSMS(ginContext *gin.Context) {
 		return
 	}
 
-	ginContext.JSON(http.StatusOK, gin.H{"message": "SMS queued successfully", "id": sms.ID})
+	response := gin.H{"message": "SMS queued successfully", "id": sms.ID}
+	if expiresAt != nil {
+		response["expires_at"] = expiresAt.UTC().Format(time.RFC3339Nano)
+	}
+	ginContext.JSON(http.StatusOK, response)
 }
 
 func (handler *Handler) GetReports(ginContext *gin.Context) {

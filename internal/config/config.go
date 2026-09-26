@@ -62,3 +62,18 @@ func getPositiveIntFromEnvironment(key string, fallback int) int {
 	}
 	return value
 }
+
+const defaultExpressSMSTTL = 2 * time.Minute
+
+// GetExpressSMSTTL returns the delivery deadline for express SMS (almost always an
+// OTP, which is worthless after a couple of minutes), read from EXPRESS_SMS_TTL as a
+// Go duration such as "2m". An express SMS still queued after created_at + TTL is
+// marked EXPIRED instead of being sent, and is not charged. Bulk SMS have no
+// deadline. Missing, invalid or non-positive values fall back to 2m.
+func GetExpressSMSTTL() time.Duration {
+	ttl, err := time.ParseDuration(strings.TrimSpace(os.Getenv("EXPRESS_SMS_TTL")))
+	if err != nil || ttl <= 0 {
+		return defaultExpressSMSTTL
+	}
+	return ttl
+}

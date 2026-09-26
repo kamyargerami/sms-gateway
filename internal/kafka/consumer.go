@@ -29,7 +29,9 @@ type Consumer struct {
 	creditRepository   domain.CreditRepository
 	cache              domain.CacheRepository
 
+	topic        string
 	retryBackoff time.Duration
+	now          func() time.Time // injectable clock for deadline checks
 }
 
 func NewConsumer(
@@ -61,7 +63,9 @@ func NewConsumer(
 		smsRepository:      smsRepository,
 		creditRepository:   creditRepository,
 		cache:              cache,
+		topic:              topic,
 		retryBackoff:       500 * time.Millisecond,
+		now:                time.Now,
 	}
 }
 
@@ -113,6 +117,14 @@ func (consumer *Consumer) processMessage(goContext context.Context, message kafk
 
 	sms.Status = domain.StatusPending
 	cost := config.GetSMSCost()
+
+	pickedUpAt := consumer.clock()
+
+	// 0. Deadline check before anything is charged: an OTP that sat in the queue past
+	// its expires_at is worthless, so it is neither sent nor paid for.
+	if sms.IsExpiredAt(pickedUpAt) {
+		return consumer.expireBeforeDebit(goContext, &sms, cost)
+	}
 
 	// 1. Transactional debit + insert (Unit of Work). The MySQL debit is guarded
 	// (balance >= cost), so even if Redis let a request through with a stale
@@ -196,10 +208,17 @@ func (consumer *Consumer) processMessage(goContext context.Context, message kafk
 		// Already paid for by the crashed attempt: resume sending.
 	}
 
-	// 2. Send to operator
+	// 2. Last deadline check: step 1 may have spent a long time retrying a slow or
+	// unavailable database. Nothing has been sent yet, so a shutdown may interrupt
+	// this (the redelivery lands here again and finishes the job).
+	if sms.IsExpiredAt(consumer.clock()) {
+		return consumer.finalizeWithRefund(goContext, &sms, cost, domain.StatusExpired)
+	}
+
+	// 3. Send to operator
 	success := consumer.operator.SendSMS(sms.ToNumber, sms.Text)
 
-	// 3. Finalize. From here on the operator call has happened, so we must not let
+	// 4. Finalize. From here on the operator call has happened, so we must not let
 	// a shutdown abort the bookkeeping (that would cause a resend on redelivery).
 	finalizeContext := context.WithoutCancel(goContext)
 
@@ -217,14 +236,57 @@ func (consumer *Consumer) processMessage(goContext context.Context, message kafk
 		return err
 	}
 
-	// 4. Failed: mark FAILED and refund in ONE transaction, guarded by the
-	// PENDING -> FAILED transition, so a crash can't leave a FAILED SMS without a
-	// refund and a redelivery can't refund twice.
+	// 5. Failed: mark FAILED and refund.
+	return consumer.finalizeWithRefund(finalizeContext, &sms, cost, domain.StatusFailed)
+}
+
+// expireBeforeDebit records an SMS that expired before this attempt charged for it.
+// Like the insufficient-balance path, the INSERT doubles as a check for a redelivery
+// of an SMS a crashed worker already paid for (still PENDING): that one is refunded.
+func (consumer *Consumer) expireBeforeDebit(goContext context.Context, sms *domain.SMS, cost int) error {
+	sms.Status = domain.StatusExpired
+	created, paidByEarlierAttempt := false, false
+	err := consumer.retry(goContext, func(attemptContext context.Context) error {
+		createError := consumer.smsRepository.Create(attemptContext, sms)
+		if createError == nil {
+			created = true
+			return nil
+		}
+		if !errors.Is(createError, domain.ErrDuplicateRecord) {
+			return createError
+		}
+		existingSMS, lookupError := consumer.smsRepository.GetByID(attemptContext, sms.ID)
+		if lookupError != nil {
+			return lookupError
+		}
+		paidByEarlierAttempt = existingSMS.Status == domain.StatusPending
+		return nil
+	})
+	sms.Status = domain.StatusPending
+	if err != nil {
+		return err
+	}
+
+	if paidByEarlierAttempt {
+		return consumer.finalizeWithRefund(goContext, sms, cost, domain.StatusExpired)
+	}
+	if created {
+		// MySQL was never debited, but the API reserved the credit in Redis.
+		consumer.refundCache(context.WithoutCancel(goContext), sms.UserID, cost)
+		log.Printf("Expired SMS %s before sending (expires_at %v)\n", sms.ID, sms.ExpiresAt)
+	}
+	return nil
+}
+
+// finalizeWithRefund moves a paid PENDING SMS to finalStatus (FAILED or EXPIRED) and
+// refunds it in ONE transaction, guarded by the PENDING -> finalStatus transition, so
+// a crash can't leave it without a refund and a redelivery can't refund twice.
+func (consumer *Consumer) finalizeWithRefund(goContext context.Context, sms *domain.SMS, cost int, finalStatus string) error {
 	refunded := false
-	err = consumer.retry(finalizeContext, func(attemptContext context.Context) error {
+	err := consumer.retry(goContext, func(attemptContext context.Context) error {
 		refunded = false
 		transactionError := consumer.transactionManager.WithTransaction(attemptContext, func(transactionContext context.Context) error {
-			if err := consumer.smsRepository.UpdateStatusFrom(transactionContext, sms.ID, domain.StatusPending, domain.StatusFailed); err != nil {
+			if err := consumer.smsRepository.UpdateStatusFrom(transactionContext, sms.ID, domain.StatusPending, finalStatus); err != nil {
 				return err
 			}
 			if err := consumer.userRepository.AddBalance(transactionContext, sms.UserID, cost); err != nil {
@@ -245,14 +307,24 @@ func (consumer *Consumer) processMessage(goContext context.Context, message kafk
 	}
 
 	if refunded {
-		if err := consumer.cache.AddBalance(finalizeContext, sms.UserID, cost); err != nil {
-			log.Printf("Error refunding Redis: %v\n", err)
-			_ = consumer.cache.InvalidateBalance(finalizeContext, sms.UserID)
-		}
+		consumer.refundCache(context.WithoutCancel(goContext), sms.UserID, cost)
+		log.Printf("Processed SMS: %s, Status: %s\n", sms.ID, finalStatus)
 	}
-
-	log.Printf("Processed SMS: %s, Status: %s\n", sms.ID, domain.StatusFailed)
 	return nil
+}
+
+func (consumer *Consumer) refundCache(goContext context.Context, userID int, cost int) {
+	if err := consumer.cache.AddBalance(goContext, userID, cost); err != nil {
+		log.Printf("Error refunding Redis: %v\n", err)
+		_ = consumer.cache.InvalidateBalance(goContext, userID)
+	}
+}
+
+func (consumer *Consumer) clock() time.Time {
+	if consumer.now != nil {
+		return consumer.now()
+	}
+	return time.Now()
 }
 
 // retry runs operation until it succeeds. Each attempt gets its own timeout. It gives up

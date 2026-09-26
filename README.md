@@ -70,6 +70,10 @@ curl -X POST http://localhost:8080/api/v1/sms/send \
   }'
 ```
 
+Express SMS get a delivery deadline (`EXPRESS_SMS_TTL`, default `2m`), returned as `expires_at` in
+the response; an express SMS still queued after it is marked `EXPIRED`, not sent
+and not charged (see ARCHITECTURE.md). Bulk SMS have no deadline.
+
 ### 3. Get User SMS Reports
 ```bash
 curl http://localhost:8080/api/v1/users/1/report

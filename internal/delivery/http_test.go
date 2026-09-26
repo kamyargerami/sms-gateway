@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"sms/internal/domain"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -93,10 +94,14 @@ func (mock *mockCacheRepository) InvalidateBalance(goContext context.Context, us
 
 // Mock Producer
 type mockProducer struct {
-	err error
+	err      error
+	produced []domain.SMS
 }
 
-func (mock *mockProducer) Produce(goContext context.Context, sms *domain.SMS) error { return mock.err }
+func (mock *mockProducer) Produce(goContext context.Context, sms *domain.SMS) error {
+	mock.produced = append(mock.produced, *sms)
+	return mock.err
+}
 
 type testDependencies struct {
 	userRepository *mockUserRepository
@@ -265,4 +270,34 @@ func TestHandler_GetReports_InvalidUser(testingT *testing.T) {
 	router.ServeHTTP(recorder, request)
 
 	assert.Equal(testingT, http.StatusBadRequest, recorder.Code)
+}
+
+func TestHandler_SendSMS_ExpressGetsDeadline(testingT *testing.T) {
+	testingT.Setenv("EXPRESS_SMS_TTL", "90s")
+	router, dependencies := setupRouter()
+
+	response := performJSONRequest(router, "POST", "/api/v1/sms/send", validSMS())
+
+	assert.Equal(testingT, http.StatusOK, response.Code)
+	assert.Contains(testingT, response.Body.String(), "expires_at")
+	if assert.Len(testingT, dependencies.producer.produced, 1) {
+		sms := dependencies.producer.produced[0]
+		if assert.NotNil(testingT, sms.ExpiresAt) {
+			assert.Equal(testingT, 90*time.Second, sms.ExpiresAt.Sub(sms.CreatedAt))
+		}
+	}
+}
+
+func TestHandler_SendSMS_BulkHasNoDeadline(testingT *testing.T) {
+	router, dependencies := setupRouter()
+	request := validSMS()
+	request.IsExpress = false
+
+	response := performJSONRequest(router, "POST", "/api/v1/sms/send", request)
+
+	assert.Equal(testingT, http.StatusOK, response.Code)
+	assert.NotContains(testingT, response.Body.String(), "expires_at")
+	if assert.Len(testingT, dependencies.producer.produced, 1) {
+		assert.Nil(testingT, dependencies.producer.produced[0].ExpiresAt)
+	}
 }
