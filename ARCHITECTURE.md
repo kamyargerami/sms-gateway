@@ -58,7 +58,7 @@ flowchart LR
     WE1 -.->|"refund / invalidate on failure"| Redis
     WB1 -.->|"refund / invalidate on failure"| Redis
 
-    API -->|GetReports| MySQL
+    API -->|GetReports (paginated)| MySQL
 ```
 
 Two binaries share the same domain/repository code (`cmd/api`, `cmd/worker`):
@@ -86,7 +86,7 @@ flowchart TB
     subgraph adapters ["Adapters"]
         D["internal/delivery<br/>HTTP handlers"]
         K["internal/kafka<br/>Producer / Consumer"]
-        R["internal/repository<br/>MySQL / Redis"]
+        R["internal/repository<br/>(Split by entity: user, sms, tx...)"]
         O["internal/operator<br/>mock telecom"]
     end
     A --> D
