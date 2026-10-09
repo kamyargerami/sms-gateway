@@ -188,7 +188,7 @@ func (handler *Handler) GetReports(ginContext *gin.Context) {
 		return
 	}
 
-	limitStr := ginContext.DefaultQuery("limit", "10")
+	limitStr := ginContext.DefaultQuery("limit", "50")
 	offsetStr := ginContext.DefaultQuery("offset", "0")
 
 	limit, err := strconv.Atoi(limitStr)
