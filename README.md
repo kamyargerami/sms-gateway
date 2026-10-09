@@ -87,7 +87,7 @@ To run all test suites across the project inside an isolated Docker container:
 ```bash
 make test
 ```
-This will automatically execute `go test -v ./...` in a temporary `golang:1.26-alpine` container and ensure that the HTTP Handlers, Mock Operators, and Core logic return the expected results without modifying your host system.
+This will automatically execute `go test -v ./...` in a temporary `golang:alpine` container and ensure that the HTTP Handlers, Mock Operators, and Core logic return the expected results without modifying your host system.
 
 ## 🚀 Load Testing (Benchmarking)
 
