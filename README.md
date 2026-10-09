@@ -75,9 +75,12 @@ the response; an express SMS still queued after it is marked `EXPIRED`, not sent
 and not charged (see ARCHITECTURE.md). Bulk SMS have no deadline.
 
 ### 3. Get User SMS Reports
+Fetch SMS reports for a user with optional `limit` and `offset` query parameters for pagination (default `limit=50`, `offset=0`).
+
 ```bash
-curl http://localhost:8080/api/v1/users/1/report
+curl "http://localhost:8080/api/v1/users/1/report?limit=50&offset=0"
 ```
+The response will include the `reports` array along with the `limit` and `offset` used.
 
 ## 🧪 Automated Testing
 

@@ -278,7 +278,7 @@ escalation, which removes the deadlock without weakening consistency.
   spelled out right next to the values, so scaling replica counts doesn't
   silently exhaust MySQL's connection limit.
 - `sms_records(user_id, created_at DESC)` is a composite index, so
-  `GetReports` stays O(log n) instead of a filesort even once a user has
+  paginated `GetReports` (using `LIMIT` and `OFFSET`) stays O(log n) instead of a filesort even once a user has
   millions of rows.
 
 ### Sizing the worker fleet for >=100M messages/day
