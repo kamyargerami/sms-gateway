@@ -188,13 +188,30 @@ func (handler *Handler) GetReports(ginContext *gin.Context) {
 		return
 	}
 
-	reports, err := handler.smsRepository.GetByUserID(ginContext.Request.Context(), userID)
+	limitStr := ginContext.DefaultQuery("limit", "10")
+	offsetStr := ginContext.DefaultQuery("offset", "0")
+
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit <= 0 || limit > 100 {
+		limit = 50
+	}
+
+	offset, err := strconv.Atoi(offsetStr)
+	if err != nil || offset < 0 {
+		offset = 0
+	}
+
+	reports, err := handler.smsRepository.GetByUserID(ginContext.Request.Context(), userID, limit, offset)
 	if err != nil {
 		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch reports"})
 		return
 	}
 
-	ginContext.JSON(http.StatusOK, gin.H{"reports": reports})
+	ginContext.JSON(http.StatusOK, gin.H{
+		"reports": reports,
+		"limit":   limit,
+		"offset":  offset,
+	})
 }
 
 // RegisterRoutes wires the handlers. Shared by main and tests so the paths used

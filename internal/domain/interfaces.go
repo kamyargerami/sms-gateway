@@ -23,7 +23,7 @@ type SMSRepository interface {
 	// Returns ErrStatusNotChanged if the record is not in the `from` state.
 	UpdateStatusFrom(goContext context.Context, id string, from string, to string) error
 	GetByID(goContext context.Context, id string) (*SMS, error)
-	GetByUserID(goContext context.Context, userID int) ([]SMS, error)
+	GetByUserID(goContext context.Context, userID int, limit int, offset int) ([]SMS, error)
 }
 
 type CreditRepository interface {

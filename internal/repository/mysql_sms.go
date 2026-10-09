@@ -64,9 +64,9 @@ func (repository *MySQLSMSRepository) GetByID(goContext context.Context, id stri
 	return smsRecord, nil
 }
 
-func (repository *MySQLSMSRepository) GetByUserID(goContext context.Context, userID int) ([]domain.SMS, error) {
+func (repository *MySQLSMSRepository) GetByUserID(goContext context.Context, userID int, limit int, offset int) ([]domain.SMS, error) {
 	queryer := getQueryer(goContext, repository.database)
-	rows, err := queryer.QueryContext(goContext, "SELECT "+smsColumns+" FROM sms_records WHERE user_id = ? ORDER BY created_at DESC LIMIT 100", userID)
+	rows, err := queryer.QueryContext(goContext, "SELECT "+smsColumns+" FROM sms_records WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?", userID, limit, offset)
 	if err != nil {
 		return nil, err
 	}

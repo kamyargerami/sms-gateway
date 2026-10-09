@@ -134,7 +134,7 @@ func (repository fakeSMSRepository) GetByID(goContext context.Context, id string
 	return &record, nil
 }
 
-func (repository fakeSMSRepository) GetByUserID(goContext context.Context, userID int) ([]domain.SMS, error) {
+func (repository fakeSMSRepository) GetByUserID(goContext context.Context, userID int, limit int, offset int) ([]domain.SMS, error) {
 	return nil, nil
 }
 

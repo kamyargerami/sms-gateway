@@ -51,7 +51,7 @@ func (mock *mockSMSRepository) UpdateStatusFrom(goContext context.Context, id, f
 func (mock *mockSMSRepository) GetByID(goContext context.Context, id string) (*domain.SMS, error) {
 	return nil, nil
 }
-func (mock *mockSMSRepository) GetByUserID(goContext context.Context, userID int) ([]domain.SMS, error) {
+func (mock *mockSMSRepository) GetByUserID(goContext context.Context, userID int, limit int, offset int) ([]domain.SMS, error) {
 	return mock.mockData, nil
 }
 
