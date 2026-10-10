@@ -58,7 +58,7 @@ flowchart LR
     WE1 -.->|"refund / invalidate on failure"| Redis
     WB1 -.->|"refund / invalidate on failure"| Redis
 
-    API -->|GetReports (paginated)| MySQL
+    API -->|GetReports| MySQL
 ```
 
 Two binaries share the same domain/repository code (`cmd/api`, `cmd/worker`):
