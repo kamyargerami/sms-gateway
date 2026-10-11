@@ -45,7 +45,7 @@ func main() {
 
 	var expressConsumer, bulkConsumer *kafka.Consumer
 
-	if workerType == "express" || workerType == "" {
+	if workerType == "express" {
 		expressConsumer = kafka.NewConsumer(
 			kafkaBrokers, "sms_express", "worker-group-express",
 			transactionManager, userRepository, smsRepository, creditRepository, redisRepository, operatorService,
