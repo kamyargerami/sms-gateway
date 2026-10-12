@@ -343,8 +343,8 @@ erDiagram
     CREDITS {
         varchar id PK "UUID"
         int user_id FK
-        bigint amount
-        varchar type "TOPUP / SMS_SENT / REFUND"
+        bigint amount "signed: SMS_SENT < 0, TOPUP / REFUND > 0"
+        enum type "TOPUP / SMS_SENT / REFUND"
         timestamp created_at
     }
 ```
@@ -355,6 +355,9 @@ negative — this is a second, storage-level backstop underneath the
 application-level `WHERE balance >= cost` guard. `credits` is an audit trail
 (top-up / charge / refund) rather than something the business logic reads
 back from, which keeps the balance check itself a single indexed column read.
+Its `amount` is signed (charges negative, top-ups and refunds positive, enforced
+by a `CHECK` constraint), so `SUM(amount)` over a user's rows reconciles with
+`users.balance`.
 
 ## 9. Deployment topology
 

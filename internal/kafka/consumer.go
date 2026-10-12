@@ -139,7 +139,7 @@ func (consumer *Consumer) processMessage(goContext context.Context, message kafk
 			if err := consumer.smsRepository.Create(transactionContext, &sms); err != nil {
 				return err
 			}
-			return consumer.creditRepository.Create(transactionContext, sms.UserID, cost, domain.CreditSMSSent)
+			return consumer.creditRepository.Create(transactionContext, sms.UserID, -cost, domain.CreditSMSSent)
 		})
 
 		switch {
