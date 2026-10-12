@@ -10,12 +10,17 @@
 //  3. waits until the workers have finalized every accepted SMS (or stop making
 //     progress) and reports worker throughput and final statuses from MySQL.
 //
+// The API port, MySQL connection and SMS cost come from the stack's own settings
+// in deployments/.env (API_PORT, MYSQL_*, SMS_COST, TZ); variables already set in
+// the process environment win over the file.
+//
 // Run from the repository root while the stack is up (make up):
 //
 //	go run ./scripts/loadtest -users 1000 -n 100000 -c 500
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
@@ -25,8 +30,10 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -34,6 +41,8 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 )
+
+const envFile = "deployments/.env"
 
 type options struct {
 	apiURL      string
@@ -48,15 +57,21 @@ type options struct {
 }
 
 func main() {
-	var opts options
-	flag.StringVar(&opts.apiURL, "api", "http://localhost:8080", "API base URL")
-	flag.StringVar(&opts.dsn, "dsn", "sms_user:smspassword@tcp(localhost:3306)/sms_db?parseTime=true&loc=Local", "MySQL DSN (host port from MYSQL_PORT)")
+	environment, err := loadEnvironment(envFile)
+	if err != nil {
+		log.Fatalf("read %s: %v", envFile, err)
+	}
+
+	opts := options{
+		apiURL:  "http://localhost:" + environment.text("API_PORT", "8080"),
+		dsn:     environment.mysqlDSN(),
+		smsCost: environment.positiveInteger("SMS_COST", 10),
+	}
 	flag.IntVar(&opts.users, "users", 1000, "number of distinct users to spread the load over")
 	flag.IntVar(&opts.firstUserID, "first-user", 1000, "first user id to use (ids first-user .. first-user+users-1)")
 	flag.IntVar(&opts.requests, "n", 100000, "total number of SMS to send")
 	flag.IntVar(&opts.concurrency, "c", 500, "number of concurrent HTTP clients")
 	flag.BoolVar(&opts.express, "express", false, "send express SMS (subject to EXPRESS_SMS_TTL; expired ones are not counted as throughput)")
-	flag.IntVar(&opts.smsCost, "sms-cost", 10, "SMS_COST configured on the API (used to size each user's top-up)")
 	flag.DurationVar(&opts.waitTimeout, "wait-no-progress", 30*time.Second, "stop waiting for workers after this long without progress")
 	flag.Parse()
 
@@ -70,7 +85,7 @@ func main() {
 	}
 	defer database.Close()
 	if err := database.Ping(); err != nil {
-		log.Fatalf("connect to MySQL (%s): %v", opts.dsn, err)
+		log.Fatalf("connect to MySQL (settings from %s): %v", envFile, err)
 	}
 
 	client := &http.Client{
@@ -96,6 +111,74 @@ func main() {
 
 	fmt.Println("== Waiting for workers to finalize accepted SMS")
 	waitForWorkers(database, opts, runStart, accepted)
+}
+
+// environment holds the settings from the .env file, overlaid with the process
+// environment.
+type environment map[string]string
+
+// loadEnvironment parses KEY=VALUE lines from path, skipping blank lines and #
+// comments and stripping surrounding quotes, then overlays the process environment.
+func loadEnvironment(path string) (environment, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	values := environment{}
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, found := strings.Cut(strings.TrimPrefix(line, "export "), "=")
+		if !found {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
+			value = value[1 : len(value)-1]
+		}
+		values[strings.TrimSpace(key)] = value
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	for _, entry := range os.Environ() {
+		if key, value, found := strings.Cut(entry, "="); found {
+			values[key] = value
+		}
+	}
+	return values, nil
+}
+
+func (env environment) text(key, fallback string) string {
+	if value := env[key]; value != "" {
+		return value
+	}
+	return fallback
+}
+
+// positiveInteger mirrors config.GetSMSCost: invalid or non-positive values fall
+// back to the default, so the top-up matches what the API actually charges.
+func (env environment) positiveInteger(key string, fallback int) int {
+	value, err := strconv.Atoi(env[key])
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	return value
+}
+
+// mysqlDSN builds the DSN for the MySQL port docker compose publishes on
+// localhost, in the stack's time zone (TZ).
+func (env environment) mysqlDSN() string {
+	return fmt.Sprintf("%s:%s@tcp(localhost:%s)/%s?parseTime=true&loc=%s",
+		env.text("MYSQL_USER", "sms_user"), env.text("MYSQL_PASSWORD", "smspassword"),
+		env.text("MYSQL_PORT", "3306"), env.text("MYSQL_DATABASE", "sms_db"),
+		url.QueryEscape(env.text("TZ", "Local")))
 }
 
 // prepareUsers inserts missing users and tops each one up through the API with
