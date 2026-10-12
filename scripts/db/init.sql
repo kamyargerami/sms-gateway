@@ -25,7 +25,7 @@ CREATE TABLE credits
     id         VARCHAR(36) DEFAULT (UUID()) PRIMARY KEY,
     user_id    INT UNSIGNED NOT NULL,
     amount     BIGINT UNSIGNED NOT NULL,
-    type       VARCHAR(20) NOT NULL, -- 'TOPUP' or 'SMS_SENT' or 'REFUND'
+    type       ENUM('TOPUP', 'SMS_SENT', 'REFUND') NOT NULL,
     created_at TIMESTAMP   DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users (id),
     INDEX      idx_user_created (user_id, created_at DESC)
