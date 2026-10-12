@@ -6,6 +6,8 @@ services:
       # Pin strict mode explicitly: balances are BIGINT UNSIGNED, and without strict
       # mode MySQL would silently clamp a negative result to 0 instead of failing.
       - "--sql-mode=STRICT_ALL_TABLES,ONLY_FULL_GROUP_BY,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION"
+      - "--innodb_buffer_pool_size=1G"
+      - "--innodb_redo_log_capacity=1G"
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
